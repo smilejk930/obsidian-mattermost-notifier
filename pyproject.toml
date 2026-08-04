@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obsidian-mattermost-notifier"
+version = "0.1.0"
+description = "Notify Mattermost when new Markdown documents appear in mirrored Obsidian vaults"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+dependencies = [
+  "PyYAML>=6.0.1,<7",
+  "requests>=2.31,<3",
+  "watchdog>=4,<7",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8,<9",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+obsidian-mattermost-notifier = "obsidian_mattermost_notifier.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]

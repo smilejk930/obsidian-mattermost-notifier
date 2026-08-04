@@ -1,0 +1,31 @@
+mattermost:
+  url: "https://mattermost.example.com"
+  token: "CHANGE_ME"
+  verify_ssl: true
+
+obsidian_notifications:
+  - enabled: true
+    vault_path: "/srv/obsidian/vaults/example_vault"
+    vault_name: "example_vault"
+    team_name: "dev-team"
+    channel_name: "development-docs"
+    ignore_folders:
+      - ".obsidian"
+      - ".trash"
+    settle_seconds: 2
+
+  - enabled: false
+    vault_path: "/srv/obsidian/vaults/another_vault"
+    vault_name: "another_vault"
+    team_name: "dev-team"
+    channel_name: "another-docs"
+    ignore_folders:
+      - ".obsidian"
+      - ".trash"
+    settle_seconds: 2
+
+state:
+  database_path: "/var/lib/obsidian-mattermost-notifier/notifier.db"
+
+logging:
+  level: "INFO"
