@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "obsidian-mattermost-notifier"
-version = "0.2.0"
+version = "0.3.0"
 description = "Notify Mattermost when new Markdown documents appear in mirrored Obsidian vaults"
 readme = "README.md"
 requires-python = ">=3.11"

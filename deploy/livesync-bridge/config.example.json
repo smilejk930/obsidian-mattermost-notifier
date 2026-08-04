@@ -1,0 +1,25 @@
+{
+  "peers": [
+    {
+      "type": "couchdb",
+      "name": "example-vault-remote",
+      "group": "example-vault",
+      "database": "example_vault",
+      "username": "CHANGE_ME",
+      "password": "CHANGE_ME",
+      "url": "https://couchdb.internal.example",
+      "passphrase": "CHANGE_ME",
+      "obfuscatePassphrase": "CHANGE_ME",
+      "baseDir": "",
+      "useRemoteTweaks": true
+    },
+    {
+      "type": "storage",
+      "name": "example-vault-storage",
+      "group": "example-vault",
+      "baseDir": "data/example_vault/",
+      "scanOfflineChanges": false,
+      "useChokidar": false
+    }
+  ]
+}

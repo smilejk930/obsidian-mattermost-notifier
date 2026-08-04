@@ -1,0 +1,80 @@
+name: obsidian-mattermost-notifier
+
+services:
+  livesync-bridge:
+    image: "${LIVESYNC_BRIDGE_IMAGE:?Set LIVESYNC_BRIDGE_IMAGE in .env}"
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    group_add:
+      - "20001"
+    environment:
+      DENO_DIR: /var/lib/livesync-bridge/deno
+      DENO_TLS_CA_STORE: system
+      LSB_CONFIG: /run/secrets/livesync-bridge-config.json
+      LSB_HEALTH_FILE: /tmp/livesync-bridge-health.json
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      TZ: Asia/Seoul
+    volumes:
+      - /etc/obsidian-livesync-bridge/config.json:/run/secrets/livesync-bridge-config.json:ro,Z
+      - /etc/obsidian-container/ca-bundle.pem:/etc/ssl/certs/ca-certificates.crt:ro,z
+      - /etc/localtime:/etc/localtime:ro
+      - /srv/obsidian/vaults:/app/data:rw,z
+      - /var/lib/obsidian-livesync-bridge:/var/lib/livesync-bridge:rw,Z
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - deno
+        - eval
+        - -A
+        - "const h=JSON.parse(await Deno.readTextFile('/tmp/livesync-bridge-health.json')); if (!h.ok || Date.now() - h.ts > 30000) Deno.exit(1);"
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    stop_grace_period: 30s
+
+  obsidian-mattermost-notifier:
+    image: "${NOTIFIER_IMAGE:?Set NOTIFIER_IMAGE in .env}"
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    group_add:
+      - "20001"
+    depends_on:
+      livesync-bridge:
+        condition: service_healthy
+    environment:
+      NOTIFIER_READINESS_FILE: /var/lib/obsidian-mattermost-notifier/bridge-initial-sync.complete
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      TZ: Asia/Seoul
+    volumes:
+      - /etc/obsidian-mattermost-notifier/config.yaml:/etc/obsidian-mattermost-notifier/config.yaml:ro,Z
+      - /etc/obsidian-container/ca-bundle.pem:/etc/ssl/certs/ca-certificates.crt:ro,z
+      - /etc/localtime:/etc/localtime:ro
+      - /srv/obsidian/vaults:/srv/obsidian/vaults:ro,z
+      - /var/lib/obsidian-mattermost-notifier:/var/lib/obsidian-mattermost-notifier:rw,Z
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "test -f /var/lib/obsidian-mattermost-notifier/bridge-initial-sync.complete && kill -0 1"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 30s

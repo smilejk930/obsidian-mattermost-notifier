@@ -9,6 +9,8 @@ dist/
 build/
 *.egg-info/
 config.yaml
+compose.yaml
+deploy/livesync-bridge/config.json
 *.db
 *.sqlite
 *.sqlite3

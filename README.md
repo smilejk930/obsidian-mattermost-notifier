@@ -2,24 +2,25 @@
 
 Rocky Linux에서 Self-hosted LiveSync로 동기화된 Obsidian 보관함을 감시하고, 새 Markdown 문서가 생기면 지정된 Mattermost 채널에 알리는 서버 서비스입니다.
 
-Phase 1 로컬 코어와 Phase 2 Mattermost 연결이 구현되어 있습니다. 다중 보관함 감시, SQLite baseline 및 중복 방지, Bearer 인증 검증, 채널 조회, 비동기 게시와 지속 재시도, rate limit 처리, 명시적 smoke test를 포함합니다. 운영용 systemd 구성은 Phase 3 범위입니다.
+Phase 1 로컬 코어와 Phase 2 Mattermost 연결이 구현되어 있습니다. 다중 보관함 감시, SQLite baseline 및 중복 방지, Bearer 인증 검증, 채널 조회, 비동기 게시와 지속 재시도, rate limit 처리, 명시적 smoke test를 포함합니다. Phase 3은 외부 인터넷을 사용할 수 없는 Rocky Linux 서버를 위한 Docker Compose 배포입니다.
 
 ## 운영 경로
 
 아래는 공개 문서와 예제 설정에서 사용하는 예시 배치입니다. 실제 운영 경로는 환경에 맞게 변경합니다.
 
 ```text
-/srv/obsidian/vaults/example_vault                  # LiveSync Bridge 보관함 미러(읽기 전용)
-/opt/obsidian-mattermost-notifier/                  # 애플리케이션 설치 루트
+/srv/obsidian/vaults/example_vault                  # Bridge 쓰기/notifier 읽기 전용 미러
 /etc/obsidian-mattermost-notifier/config.yaml       # 운영 설정
 /var/lib/obsidian-mattermost-notifier/notifier.db   # SQLite 상태
+/opt/obsidian-mattermost-notifier/                  # Compose 및 이미지 버전 설정
 ```
 
 Obsidian URI의 `vault` 값은 서버 디렉터리명이 아니라 각 사용자 PC의 Obsidian에 등록된 보관함 이름이어야 합니다. 예시에서는 서버 경로와 클라이언트 보관함 이름을 `example_vault`로 통일합니다.
 
-## 설치 및 실행
+## 개발 PC에서 직접 실행
 
-Python 3.11 이상이 필요합니다.
+이 절차는 개발과 테스트용이다. 운영 서버에서는 Python 패키지를 직접 설치하지 않고 아래의
+오프라인 Docker 배포 절차를 사용한다. Python 3.11 이상이 필요하다.
 
 ```bash
 cd /opt/obsidian-mattermost-notifier
@@ -35,7 +36,8 @@ cp config.example.yaml config.yaml
   --config /etc/obsidian-mattermost-notifier/config.yaml
 ```
 
-로그는 stdout/stderr로 출력되므로 systemd에서는 journald가 수집할 수 있습니다. `SIGTERM`과 `SIGINT`를 받으면 감시기, HTTP 세션, SQLite 연결을 순서대로 닫습니다.
+로그는 stdout/stderr로 출력합니다. `SIGTERM`과 `SIGINT`를 받으면 감시기, HTTP 세션,
+SQLite 연결을 순서대로 닫습니다.
 
 ### Mattermost 연결 검증
 
@@ -47,13 +49,193 @@ cp config.example.yaml config.yaml
   --check-mattermost
 ```
 
-실제 채널 smoke test는 보관함 이름을 명시했을 때만 테스트 메시지 한 건을 보냅니다. 이 명령은 자동 테스트에서 실행되지 않습니다.
+실제 채널 smoke test는 보관함 이름을 명시했을 때만 테스트 메시지 한 건을 보냅니다. 이
+명령은 자동 테스트에서 실행되지 않습니다.
 
 ```bash
 .venv/bin/obsidian-mattermost-notifier \
   --config /etc/obsidian-mattermost-notifier/config.yaml \
   --send-test example_vault
 ```
+
+## 오프라인 Docker 배포
+
+운영 서버는 외부 인터넷에 접근하지 못하지만 내부 CouchDB, Mattermost, DNS 및 사내 CA에는
+접근할 수 있다는 전제다. notifier와 LiveSync Bridge 이미지는 인터넷이 가능한 개발 PC에서
+함께 빌드하고 하나의 Compose 프로젝트로 운영한다. 운영 서버에서는 `docker build`,
+`docker pull`, `pip install` 또는 Deno 패키지 다운로드를 실행하지 않는다.
+
+### 사전 조건
+
+- 개발 PC: Git, Docker Engine 또는 Docker Desktop, Buildx, Bash, Python 3.11 이상
+- 운영 서버: 사전에 오프라인 설치한 Docker Engine과 Compose plugin
+- 기본 지원 대상: `linux/amd64`. 다른 아키텍처는 Python wheel hash lock을 별도로 갱신해야 한다.
+- 운영 서버에서 내부 CouchDB와 Mattermost의 URL, DNS, 포트 및 TLS 인증서 검증이 가능해야 한다.
+
+### 1. 개발 PC에서 이미지와 반입 번들 생성
+
+운영 빌드는 추적 가능한 소스만 사용하도록 깨끗한 Git 작업 트리에서 실행한다.
+
+```bash
+./scripts/build-offline-bundle.sh
+```
+
+스크립트는 다음 작업을 수행한다.
+
+- digest로 고정한 Python base image와 hash lock된 Python 의존성으로 notifier 이미지 빌드
+- 고정된 LiveSync Bridge commit을 clone하여 Bridge 이미지 빌드
+- 두 이미지를 하나의 `images.tar`로 저장
+- Compose 예시, 설정 예시, 이미지 태그, source revision 및 이미지 inspect 결과 포함
+- 반입 파일의 `SHA256SUMS` 생성
+
+결과는 기본적으로 다음 디렉터리에 생성된다.
+
+```text
+dist/offline-bundle-<version>-<git-sha>/
+├── images.tar
+├── compose.example.yaml
+├── image-versions.env
+├── notifier-config.example.yaml
+├── livesync-bridge-config.example.json
+├── BUILD-METADATA.txt
+├── image-inspect.json
+├── SHA256SUMS
+└── README.md
+```
+
+이미 존재하는 출력 디렉터리는 덮어쓰지 않는다. 검증 목적의 미커밋 소스 빌드만
+`ALLOW_DIRTY=1`로 허용하며 이 이미지는 운영 배포에 사용하지 않는다. Bridge 버전을 바꿀
+때는 검증한 commit 전체 SHA를 명시한다.
+
+```bash
+LIVESYNC_BRIDGE_REF=<verified-full-commit-sha> \
+BUNDLE_DIR=/path/to/new-bundle \
+./scripts/build-offline-bundle.sh
+```
+
+### 2. 운영 서버용 파일과 권한 준비
+
+번들을 승인된 매체로 `/opt/obsidian-mattermost-notifier`에 반입한 뒤 설정 예시를 복사하여
+실제 값으로 작성한다. 실제 Bot token, CouchDB 암호, E2EE passphrase와 path obfuscation
+passphrase는 이미지, Git 저장소 및 `compose.yaml`에 넣지 않는다.
+
+```bash
+sudo install -d -m 0750 /opt/obsidian-mattermost-notifier
+sudo install -d -m 0750 /etc/obsidian-mattermost-notifier
+sudo install -d -m 0750 /etc/obsidian-livesync-bridge
+sudo install -d -m 0750 /etc/obsidian-container
+sudo install -d -o 1993 -g 1993 -m 0750 /var/lib/obsidian-livesync-bridge
+sudo install -d -o 10001 -g 10001 -m 0750 /var/lib/obsidian-mattermost-notifier
+sudo install -d -o 1993 -g 20001 -m 2770 /srv/obsidian/vaults
+```
+
+- notifier 컨테이너 UID/GID는 `10001:10001`이다.
+- 고정한 Bridge image의 `deno` UID/GID는 `1993:1993`이다.
+- `20001`은 Bridge와 notifier가 공유하는 vault 읽기 그룹이다. Compose가 두 컨테이너에
+  supplementary group으로 추가한다.
+- 운영 설정 파일은 해당 컨테이너 UID/GID만 읽도록 `0640` 이하로 제한한다.
+- `/etc/obsidian-container/ca-bundle.pem`에는 OS 기본 CA와 필요한 사내 CA를 합친 PEM
+  bundle을 배치한다. 사내 CA가 없어도 공개 CA 검증에 필요한 기본 CA bundle은 있어야 한다.
+- Rocky Linux SELinux를 비활성화하지 않는다. Compose의 `z`/`Z` mount label을 유지한다.
+
+번들 안의 파일은 다음과 같이 준비한다.
+
+```bash
+cp compose.example.yaml compose.yaml
+cp image-versions.env .env
+sudo cp notifier-config.example.yaml /etc/obsidian-mattermost-notifier/config.yaml
+sudo cp livesync-bridge-config.example.json /etc/obsidian-livesync-bridge/config.json
+sudo chown root:10001 /etc/obsidian-mattermost-notifier/config.yaml
+sudo chown root:1993 /etc/obsidian-livesync-bridge/config.json
+sudo chown root:20001 /etc/obsidian-container/ca-bundle.pem
+sudo chmod 0640 \
+  /etc/obsidian-mattermost-notifier/config.yaml \
+  /etc/obsidian-livesync-bridge/config.json \
+  /etc/obsidian-container/ca-bundle.pem
+```
+
+`compose.yaml`, notifier 설정 및 Bridge 설정의 예시 호스트명과 `CHANGE_ME`를 모두 운영값으로
+바꾼다. Bridge storage peer의 `baseDir`은 Compose 내부 경로인
+`data/<vault-directory>/` 형식을 사용한다.
+
+### 3. 무결성 검증과 이미지 적재
+
+```bash
+cd /opt/obsidian-mattermost-notifier
+sha256sum -c SHA256SUMS
+docker image load -i images.tar
+docker compose config --quiet
+docker compose up -d --pull never --no-build
+```
+
+Compose는 `pull_policy: never`를 사용한다. 필요한 이미지가 로컬에 없으면 실패하며 외부
+registry에서 자동으로 가져오지 않는다.
+
+### 4. 최초 동기화 승인 marker
+
+최초 기동에서 notifier는 다음 marker가 생길 때까지 실제 애플리케이션을 시작하지 않는다.
+
+```text
+/var/lib/obsidian-mattermost-notifier/bridge-initial-sync.complete
+```
+
+이는 빈 mirror를 먼저 baseline 처리한 뒤 Bridge가 내려받는 모든 기존 문서를 신규 문서로
+오인하는 일을 방지한다. 다음 순서로 한 번만 승인한다.
+
+1. `docker compose ps`에서 Bridge가 healthy인지 확인한다.
+2. `docker compose logs -f livesync-bridge`와 `/srv/obsidian/vaults`의 파일을 확인한다.
+3. 모든 대상 vault의 초기 문서 반영이 완료되고 일정 시간 파일 수와 변경이 안정적인지 확인한다.
+4. 아래 명령으로 marker를 생성한다.
+
+```bash
+sudo install -o 10001 -g 10001 -m 0640 /dev/null \
+  /var/lib/obsidian-mattermost-notifier/bridge-initial-sync.complete
+docker compose logs -f obsidian-mattermost-notifier
+```
+
+marker는 일반적인 재부팅, 컨테이너 재생성 및 이미지 갱신 때 유지한다. mirror 또는 notifier
+DB를 처음부터 재구축할 때는 notifier를 먼저 중지하고 marker 및 baseline 재생성 절차를
+별도로 수행해야 한다.
+
+### 5. 연결 검증
+
+notifier가 시작된 뒤 다음 명령으로 인증과 채널 조회를 확인한다.
+
+```bash
+docker compose exec obsidian-mattermost-notifier \
+  obsidian-mattermost-notifier \
+  --config /etc/obsidian-mattermost-notifier/config.yaml \
+  --check-mattermost
+```
+
+실제 테스트 메시지는 명시적으로 요청한 경우에만 보낸다.
+
+```bash
+docker compose exec obsidian-mattermost-notifier \
+  obsidian-mattermost-notifier \
+  --config /etc/obsidian-mattermost-notifier/config.yaml \
+  --send-test example_vault
+```
+
+### 6. 갱신과 rollback
+
+새 번들은 기존 번들과 다른 디렉터리에 보관하고 checksum 검증 후 이미지를 추가로 load한다.
+`.env`의 두 이미지 태그를 새 버전으로 바꾸고 다음 명령으로 재생성한다.
+
+```bash
+docker compose up -d --pull never --no-build
+```
+
+문제가 있으면 `.env`를 보존한 이전 이미지 태그로 되돌리고 같은 명령을 실행한다. rollback을
+위해 최소 한 세대의 이전 `images.tar`, `.env`, `BUILD-METADATA.txt`를 유지한다. vault,
+notifier SQLite DB 및 Bridge 상태 디렉터리는 이미지와 독립적으로 백업한다.
+
+Docker 이미지 반입에는 `docker image save`/`docker image load`를 사용한다. Compose에서
+registry 접근을 금지하는 방식은 Docker의 `pull_policy: never` 동작을 따른다.
+
+- <https://docs.docker.com/reference/cli/docker/image/save/>
+- <https://docs.docker.com/reference/cli/docker/image/load/>
+- <https://docs.docker.com/reference/compose-file/services/#pull_policy>
 
 ## 설정 정책
 
@@ -66,7 +248,8 @@ cp config.example.yaml config.yaml
 - `channel_id`가 없으면 `team_name`과 `channel_name`이 모두 필요합니다.
 - 상태 DB는 활성 보관함 경로 밖의 절대 경로여야 합니다.
 - TLS 인증서 검증은 기본으로 활성화됩니다.
-- `mattermost.token`은 PAT 또는 Bot token의 Bearer 인증에 사용합니다.
+- 구현은 PAT 또는 Bot token의 Bearer 인증을 지원하지만 실제 운영의 `mattermost.token`에는
+  전용 Bot token을 사용합니다.
 - `request_timeout_seconds`는 각 HTTP 요청 제한 시간입니다.
 - `immediate_retry_attempts` 동안 짧은 지수 백오프를 사용하고, 이후에는 `retry_max_seconds` 간격으로 백그라운드 재시도합니다.
 - HTTP 429에서는 Mattermost의 `Retry-After`가 로컬 backoff보다 길면 해당 값을 우선합니다.
@@ -99,7 +282,8 @@ python3 -m venv .venv
 .venv/bin/ruff format --check src tests
 ```
 
-Debian/Ubuntu 계열 WSL에서 `ensurepip is not available` 오류가 나면 먼저 배포판의 `python3-venv` 패키지가 필요합니다. Rocky Linux에서는 사용하는 Python 버전에 맞는 venv 패키지를 설치합니다.
+Debian/Ubuntu 계열 개발 PC에서 `ensurepip is not available` 오류가 나면 먼저 배포판의
+`python3-venv` 패키지가 필요합니다.
 
 설계 배경과 단계별 요구사항은 [개발 인수인계](docs/HANDOFF.md), Phase 2 구현 요청은 [Phase 2 개발 프롬프트](docs/PHASE2_PROMPT.md)를 참고합니다. 문서의 경로와 이름은 모두 공개용 예시값입니다.
 

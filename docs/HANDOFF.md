@@ -22,9 +22,11 @@
 
 - 24시간 운영되는 Rocky Linux 개발서버가 있다.
 - 기본 systemd target은 `multi-user.target`이다.
-- GUI가 없는 systemd 서비스로 운영하는 것이 적합하다.
+- 외부 인터넷에는 접근할 수 없지만 내부 CouchDB, Mattermost, DNS 및 사내 CA에는 접근할 수 있다.
+- Docker Engine과 Compose plugin은 승인된 RPM 묶음 또는 사내 저장소로 미리 설치한다.
+- GUI 없이 하나의 Docker Compose 프로젝트로 운영한다.
 - LiveSync Bridge가 물질화하는 예시 보관함 경로는 `/srv/obsidian/vaults/example_vault`이다.
-- notifier 애플리케이션의 예시 설치 경로는 `/opt/obsidian-mattermost-notifier`이다.
+- Compose 및 오프라인 번들의 예시 설치 경로는 `/opt/obsidian-mattermost-notifier`이다.
 
 ### 기존 Windows 앱
 
@@ -54,12 +56,24 @@
     -> Mattermost REST API
 ```
 
+배포 경로:
+
+```text
+인터넷 가능 개발 PC
+    -> notifier image와 고정 commit의 LiveSync Bridge image 빌드
+    -> docker image save로 images.tar 및 SHA256SUMS 생성
+    -> 승인된 매체로 Rocky Linux 서버에 반입
+    -> docker image load
+    -> 하나의 compose.yaml로 두 컨테이너 실행(pull/build 금지)
+```
+
 ### LiveSync Bridge를 사용하는 이유
 
 - Self-hosted LiveSync 데이터를 Rocky Linux의 일반 파일시스템으로 물질화할 수 있다.
 - CouchDB 데이터의 청크, E2EE, 경로 난독화를 직접 해석하는 코드를 새로 만들 필요가 없다.
 - 여러 보관함을 각각 로컬 경로로 미러링할 수 있다.
-- Deno 직접 실행 또는 Docker Compose 운영이 가능하다.
+- 운영 배포는 저장소의 `compose.example.yaml`을 서버에서 `compose.yaml`로 복사하여 사용하는
+  Docker Compose 방식으로 한다.
 
 LiveSync Bridge: <https://github.com/vrtmrz/livesync-bridge>
 
@@ -196,6 +210,25 @@ SQLite를 사용한다. 상태 파일은 미러 보관함 밖에 둔다.
 4. 삭제 후 같은 경로로 새 문서를 다시 만든 경우를 구분할 정책을 테스트로 명시한다.
 5. 전송 실패 시 성공으로 기록하지 않고 제한된 지수 백오프로 재시도한다.
 
+### 재시작 후 보완 전송 범위
+
+보완 전송은 현재 완료 조건인 `재시작 중 생성된 문서는 복구 후 한 번 게시`를 만족하기
+위해 필요하다. 이 기능을 제거하면 notifier 또는 서버가 정지한 동안 생성된 문서는 알림
+없이 지나간다는 운영상 유실을 허용해야 한다.
+
+고정된 `최근 N시간` 범위는 두지 않는다. 유효한 SQLite 상태 DB가 있으면 마지막 실행
+상태와 재시작 시점의 파일 목록을 비교하여, 현재 존재하지만 DB에 기록되지 않은 Markdown
+문서를 모두 보완 대상으로 삼는다. 즉 시간 추정이 아니라 상태 차이를 기준으로 하므로 긴
+점검이나 장애에도 문서를 놓치지 않는다.
+
+- 최초 설치 또는 유효한 상태 DB가 없는 재구축은 현재 파일 전체를 baseline으로만 등록하고
+  알림을 보내지 않는다. DB 유실을 장기 장애로 오인하여 기존 문서 알림이 쏟아지는 것을
+  막기 위한 fail-safe 정책이다.
+- 장시간 중단 뒤 보완 대상이 많아도 누락시키는 시간 제한 대신 기존 worker와 rate limit
+  처리를 통해 순차 전송한다.
+- 서비스 중단 중 생성되었다가 재시작 전에 삭제된 파일은 재시작 시 파일 목록에 없으므로
+  이 방식으로 복구할 수 없다.
+
 Linux에서는 Windows/macOS와 달리 신뢰할 수 있는 birth time이 항상 제공되지 않으므로 파일 생성 시각은 다음 우선순위를 검토한다.
 
 1. 이벤트 최초 관측 시각
@@ -239,9 +272,8 @@ Linux에서는 Windows/macOS와 달리 신뢰할 수 있는 birth time이 항상
 
 ## 10. Mattermost 인증
 
-PAT 또는 Bot token을 Bearer 인증으로 사용한다. 자동화 신원과 권한을 개인 계정에서
-분리할 수 있는 전용 Bot 계정을 권장하며, PAT는 초기 검증이나 제한적인 대안으로
-사용할 수 있다.
+실제 운영에서는 자동화 신원과 권한을 개인 계정에서 분리한 전용 Bot token을 Bearer
+인증으로 사용한다. PAT는 운영 자격 증명으로 사용하지 않는다.
 
 - Bearer token으로 인증과 채널을 조회한다.
 - `POST /api/v4/posts`로 메시지를 작성한다.
@@ -249,25 +281,61 @@ PAT 또는 Bot token을 Bearer 인증으로 사용한다. 자동화 신원과 �
 - Incoming Webhook은 고정 채널 게시에는 단순하지만 API 조회용 별도 자격 증명이
   필요하므로 현재 구현 범위에서 제외한다.
 
-## 11. systemd 운영 요구사항
+## 11. Docker Compose 오프라인 운영 요구사항
 
-- `network-online.target` 이후 시작
-- 비정상 종료 시 자동 재시작
-- 설정 파일은 `/etc/obsidian-mattermost-notifier/config.yaml`에서 읽기
-- 비밀값은 Git에 저장하지 않기
-- 전용 비로그인 서비스 계정 사용
-- 로그는 stdout/stderr로 출력하여 journald가 수집
-- SIGTERM을 받아 watcher와 DB를 정상 종료
-- 서비스 시작 전 모든 enabled 보관함 경로와 Mattermost 인증을 검증
+- notifier와 LiveSync Bridge를 인터넷 가능한 개발 PC에서 모두 빌드한다.
+- 운영 빌드는 깨끗한 Git 작업 트리와 고정된 source revision을 사용한다.
+- Python base image는 digest, Python 의존성은 버전과 wheel hash, Bridge는 commit 전체 SHA로
+  고정한다.
+- 두 이미지를 `docker image save`로 하나의 `images.tar`에 담고 SHA-256 checksum과 build
+  metadata를 함께 반입한다.
+- 운영 서버에서는 `docker build`, `docker pull`, `pip install`과 Deno 패키지 다운로드를
+  실행하지 않는다.
+- `compose.example.yaml`을 운영 서버에서 `compose.yaml`로 복사해 실제 경로를 작성한다.
+- Compose에는 `build:`를 두지 않고 `pull_policy: never` 및 `--pull never --no-build`를
+  사용한다.
+- 두 컨테이너는 하나의 Compose 프로젝트로 운영하며 `restart: unless-stopped`를 적용한다.
+- Bridge health가 정상이어야 notifier를 시작할 수 있게 하되, 최초 원격 문서 반영 완료는
+  운영자가 별도 readiness marker로 승인한다.
+- notifier는 marker가 생길 때까지 대기하고, 승인 후 처음 보는 현재 문서를 baseline으로
+  등록한 다음 watcher를 시작한다.
+- 설정 파일은 read-only, vault는 Bridge에 read-write/notifier에 read-only, SQLite와 Bridge
+  상태는 각각 별도의 영속 bind mount로 제공한다.
+- 컨테이너는 non-root, read-only root filesystem, `cap_drop: ALL`,
+  `no-new-privileges`로 실행하고 호스트 SELinux를 유지한다.
+- 로그는 stdout/stderr로 출력하여 Docker logging driver가 수집한다. 운영 daemon이
+  `journald` driver를 사용하면 journald에서 조회한다.
+- SIGTERM을 받아 watcher, HTTP session과 DB를 정상 종료하고 30초 grace period를 둔다.
+- 내부 CA bundle과 `/etc/localtime`을 read-only mount하며 TLS 검증을 해제하지 않는다.
+- 이전 이미지 번들 및 이미지 태그 파일을 최소 한 세대 보관하여 registry 없이 rollback한다.
 
-예상 단위:
+예상 파일:
 
 ```text
-livesync-bridge.service         # 또는 Docker Compose systemd wrapper
-obsidian-mattermost.service
+Dockerfile
+compose.example.yaml
+scripts/build-offline-bundle.sh
+deploy/notifier/entrypoint.sh
+deploy/livesync-bridge/Dockerfile
+deploy/livesync-bridge/config.example.json
 ```
 
-알림 서비스는 LiveSync Bridge 이후 시작하도록 순서를 지정하되, 미러 경로가 늦게 생기는 상황에서도 재시도할 수 있어야 한다.
+### 최초 초기 동기화 승인
+
+Compose `depends_on`과 Bridge health는 프로세스 및 peer 상태를 확인하지만 CouchDB의 기존
+문서가 파일시스템에 모두 반영되었다는 업무적 완료 시점을 보장하지 않는다. 빈 mirror에서
+notifier가 먼저 baseline을 만들면 뒤이어 내려오는 모든 기존 문서가 신규 문서로 처리될 수
+있다.
+
+따라서 최초 배포에서는 Bridge가 healthy가 된 뒤 로그, 대상 vault의 파일 수 및 일정 시간
+변경이 안정적인지를 운영자가 확인하고 다음 marker를 만든다.
+
+```text
+/var/lib/obsidian-mattermost-notifier/bridge-initial-sync.complete
+```
+
+marker는 일반 재부팅과 이미지 갱신에는 유지한다. mirror 또는 notifier DB를 처음부터
+재구축할 때만 notifier를 먼저 중지하고 marker 및 baseline 재생성 절차를 수행한다.
 
 ## 12. 보안 요구사항
 
@@ -279,6 +347,58 @@ obsidian-mattermost.service
 - 알림 본문에는 제목과 경로만 포함하고 실제 문서 본문은 전송하지 않음
 - LiveSync Bridge 암호 설정은 notifier 설정과 분리
 
+### LiveSync E2EE와 path obfuscation의 의미
+
+두 설정은 CouchDB에 저장되는 원격 데이터에서 무엇을 숨길지 정한다. HTTPS/TLS가
+네트워크 전송 중인 데이터를 보호하는 것과는 별개의 계층이다.
+
+공식 설정 설명: <https://github.com/vrtmrz/obsidian-livesync/blob/main/docs/settings.md#3-privacy--encryption>
+
+| 설정 | 보호하는 것 | 설정하지 않았을 때 |
+| --- | --- | --- |
+| E2EE (end-to-end encryption) | 문서 본문과 동기화 데이터를 클라이언트에서 암호화하여 CouchDB 관리자나 DB 백업만으로 내용을 읽지 못하게 함 | CouchDB 접근 권한을 가진 주체가 저장된 내용을 볼 수 있음 |
+| path obfuscation | CouchDB 문서 식별자에 드러날 수 있는 폴더명과 파일 경로를 알아보기 어려운 값으로 변환 | E2EE를 켜도 `인사/평가결과.md` 같은 경로 정보가 별도로 노출될 수 있음 |
+
+예를 들어 E2EE만 사용하면 문서 본문은 숨겨져도 파일명과 폴더명에서 프로젝트명이나
+고객명을 추측할 수 있다. path obfuscation까지 사용하면 이 메타데이터 노출도 줄인다.
+path obfuscation은 파일 내용 암호화를 대신하지 않으므로 기밀성이 필요하면 E2EE와 함께
+사용한다.
+
+LiveSync Bridge는 암호화된 CouchDB 데이터를 일반 파일로 물질화해야 하므로 다음 값이
+필요하다.
+
+Bridge 설정 설명: <https://github.com/vrtmrz/livesync-bridge#configuration>
+
+- `passphrase`: 해당 보관함의 LiveSync E2EE passphrase. E2EE를 사용하지 않을 때만 빈 값.
+- `obfuscatePassphrase`: path obfuscation에 사용한 passphrase. 사용하지 않을 때는 빈 값이며
+  E2EE passphrase와 다른 값일 수도 있다.
+
+모든 Obsidian 클라이언트와 Bridge가 해당 보관함에 대해 동일한 설정과 passphrase를
+사용해야 한다. Bridge에 passphrase를 제공하면 CouchDB 및 DB 백업의 노출은 줄일 수
+있지만, Bridge 프로세스와 물질화된 `/srv/obsidian/vaults/...` 파일은 평문을 읽을 수
+있다. 따라서 서버 침해까지 막아 주는 기능은 아니며 미러 디렉터리 권한과 서버 보안은
+계속 필요하다.
+
+신규 보관함에는 E2EE와 path obfuscation을 모두 활성화하는 것을 권장한다. 이미 운영 중인
+보관함은 설정을 즉시 바꾸지 말고 먼저 현재 모든 클라이언트의 설정을 확인하고 백업한 뒤,
+LiveSync가 요구하는 DB rebuild 또는 경로 변환 절차를 별도 점검한다. passphrase를 잃으면
+원격 데이터를 복호화할 수 없으므로 비밀번호 관리자 등 별도 안전한 저장소에도 복구본을
+보관한다.
+
+### Bridge 비밀 배포 방식
+
+- 저장소의 `compose.example.yaml`과 예시 설정에는 실제 비밀값을 넣지 않는다.
+- 운영 서버의 `/etc/obsidian-livesync-bridge/config.json`에 CouchDB 계정,
+  `passphrase`, `obfuscatePassphrase`를 저장하고 컨테이너의
+  `/run/secrets/livesync-bridge-config.json`에 read-only bind mount하고 `LSB_CONFIG`로
+  해당 경로를 지정한다.
+- 호스트 파일은 root 및 Bridge 운영 그룹만 읽을 수 있게 소유권을 지정하고 `0640` 이하로
+  제한한다. 컨테이너의 실행 UID/GID가 읽을 수 있는지는 배포 시 확인한다.
+- compose 출력, journald, 셸 명령행에 비밀값을 직접 넣지 않는다. 비밀 파일과 백업의 접근
+  권한 및 교체 절차도 함께 관리한다.
+- Mattermost Bot token은 notifier의 `/etc/obsidian-mattermost-notifier/config.yaml`에
+  별도로 두어 Bridge가 읽지 못하게 한다.
+
 ## 13. 추천 프로젝트 구조
 
 ```text
@@ -288,6 +408,11 @@ obsidian-mattermost-notifier/
 │   ├── HANDOFF.md
 │   └── PHASE2_PROMPT.md
 ├── pyproject.toml
+├── Dockerfile
+├── .dockerignore
+├── compose.example.yaml
+├── requirements.build.lock
+├── requirements.runtime.lock
 ├── config.example.yaml
 ├── src/
 │   └── obsidian_mattermost_notifier/
@@ -310,8 +435,13 @@ obsidian-mattermost-notifier/
 │   ├── test_state.py
 │   └── test_message.py
 ├── deploy/
-│   ├── obsidian-mattermost.service
+│   ├── notifier/
+│   │   └── entrypoint.sh
 │   └── livesync-bridge/
+│       ├── Dockerfile
+│       └── config.example.json
+├── scripts/
+│   └── build-offline-bundle.sh
 └── .gitignore
 ```
 
@@ -336,14 +466,19 @@ obsidian-mattermost-notifier/
 
 ### Phase 3: Rocky Linux 배포
 
-- 전용 계정 및 디렉터리
-- systemd unit
-- LiveSync Bridge 미러 연동
-- 서비스 재시작/네트워크 장애/보관함별 장애 테스트
+- [x] non-root notifier Docker image와 고정/hash 검증된 Python 의존성
+- [x] 고정 commit의 LiveSync Bridge를 함께 빌드하는 오프라인 bundle script
+- [x] Bridge와 notifier를 묶은 `compose.example.yaml`
+- [x] 초기 동기화 운영자 승인 marker
+- [x] read-only 설정/vault, 영속 상태, 내부 CA, SELinux mount 정책
+- [x] 이미지 save/load, checksum, update 및 rollback 문서
+- [ ] 실제 운영 자격 증명과 내부 CA를 사용한 Rocky Linux 배포 검증
+- [ ] 재부팅/네트워크 장애/보관함별 장애/이전 이미지 rollback 테스트
 
 ### Phase 4: 운영 안정화
 
-- metrics 또는 health check 선택
+- [x] Bridge heartbeat와 notifier process/marker container health check
+- [ ] 필요 시 metrics 추가
 - DB 정리 정책
 - 설치 및 장애대응 문서
 
@@ -360,6 +495,8 @@ obsidian-mattermost-notifier/
 - 한 보관함 장애가 다른 보관함에 영향을 주지 않는다.
 - SIGTERM 시 정상 종료한다.
 - 실제 비밀값이 Git에 포함되지 않는다.
+- 운영 서버가 외부 registry나 패키지 저장소에 접근하지 않고 두 이미지를 기동할 수 있다.
+- 최초 Bridge 동기화 승인 전에는 notifier가 baseline이나 알림 전송을 시작하지 않는다.
 
 `정확히 한 번`은 동일 파일 이벤트와 SQLite generation 기준이다. Mattermost가 게시를
 완료한 뒤 HTTP 응답만 유실되는 네트워크 경계에서는 현재 create-post 호출에
@@ -374,12 +511,24 @@ docs/HANDOFF.md 전체를 읽고 Phase 1을 구현해줘.
 먼저 현재 저장소 상태를 확인하고, pyproject 기반 패키지와 테스트를 만든 다음 테스트 결과까지 보고해줘.
 ```
 
-## 17. 아직 결정할 사항
+## 17. 운영 결정 및 확인할 사항
 
-- 실제 운영에서 전용 Bot token을 사용할지 제한적으로 PAT를 사용할지
-- LiveSync Bridge를 Docker Compose로 운영할지 Deno systemd 서비스로 운영할지
-- LiveSync E2EE 및 path obfuscation 활성화 여부와 서버 비밀 배포 방식
-- 서버가 과거에 놓친 문서를 어느 시간 범위까지 보완 전송할지
+확정:
+
+- 실제 운영 Mattermost 인증은 전용 Bot token을 사용한다.
+- notifier와 LiveSync Bridge는 개발 PC에서 이미지로 빌드하고 하나의 `compose.yaml`로
+  오프라인 Rocky Linux 서버에서 운영한다.
+- 저장소에는 `compose.example.yaml`만 제공하며 운영자는 이를 `compose.yaml`로 복사하여
+  운영 경로와 이미지 버전을 작성한다.
+- 최초 Bridge 동기화 완료는 자동 health만으로 판단하지 않고 운영자 승인 marker를 사용한다.
+- 재시작 후 보완 전송은 고정 시간 범위 없이 유효한 SQLite DB와 현재 파일 목록의 차이를
+  기준으로 한다. 최초 설치 또는 DB 유실 시에는 전체 파일을 baseline 처리한다.
+
+배포 전에 확인:
+
+- 현재 보관함에서 E2EE와 path obfuscation을 이미 사용 중인지 모든 클라이언트 설정을
+  확인한다. 신규 보관함에는 둘 다 활성화를 권장하며, 기존 보관함의 변경은 백업과 공식
+  변환 절차 확인 후 수행한다.
 
 ### Phase 1에서 확정한 정책
 
