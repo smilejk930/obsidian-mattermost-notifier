@@ -7,7 +7,7 @@
       "database": "example_vault",
       "username": "CHANGE_ME",
       "password": "CHANGE_ME",
-      "url": "https://couchdb.internal.example",
+      "url": "http://couchdb.internal.example",
       "passphrase": "CHANGE_ME",
       "obfuscatePassphrase": "CHANGE_ME",
       "baseDir": "",

@@ -22,7 +22,8 @@
 
 - 24시간 운영되는 Rocky Linux 개발서버가 있다.
 - 기본 systemd target은 `multi-user.target`이다.
-- 외부 인터넷에는 접근할 수 없지만 내부 CouchDB, Mattermost, DNS 및 사내 CA에는 접근할 수 있다.
+- 외부 인터넷에는 접근할 수 없지만 내부 CouchDB, Mattermost 및 DNS에는 접근할 수 있다.
+- 현재 운영 환경은 격리된 내부망의 Mattermost와 CouchDB에 HTTP로 연결한다.
 - Docker Engine과 Compose plugin은 승인된 RPM 묶음 또는 사내 저장소로 미리 설치한다.
 - GUI 없이 하나의 Docker Compose 프로젝트로 운영한다.
 - LiveSync Bridge가 물질화하는 예시 보관함 경로는 `/srv/obsidian/vaults/example_vault`이다.
@@ -113,7 +114,7 @@ LiveSync Bridge는 양방향 동기화가 가능하므로 서버 미러를 사�
 
 ```yaml
 mattermost:
-  url: "https://mattermost.example.com"
+  url: "http://mattermost.internal.example"
   token: "CHANGE_ME"
   verify_ssl: true
   request_timeout_seconds: 10
@@ -307,7 +308,7 @@ Linux에서는 Windows/macOS와 달리 신뢰할 수 있는 birth time이 항상
 - 로그는 stdout/stderr로 출력하여 Docker logging driver가 수집한다. 운영 daemon이
   `journald` driver를 사용하면 journald에서 조회한다.
 - SIGTERM을 받아 watcher, HTTP session과 DB를 정상 종료하고 30초 grace period를 둔다.
-- 내부 CA bundle과 `/etc/localtime`을 read-only mount하며 TLS 검증을 해제하지 않는다.
+- `/etc/localtime`을 read-only mount한다. 현재 내부 HTTP 배포에는 CA bundle을 mount하지 않는다.
 - 이전 이미지 번들 및 이미지 태그 파일을 최소 한 세대 보관하여 registry 없이 rollback한다.
 
 예상 파일:
@@ -343,15 +344,17 @@ marker는 일반 재부팅과 이미지 갱신에는 유지한다. mirror 또는
 - 실제 PAT, Webhook URL, CouchDB 비밀번호, E2EE passphrase를 저장소에 커밋하지 않음
 - 예시 설정에는 `CHANGE_ME`만 사용
 - `/etc/obsidian-mattermost-notifier/config.yaml`은 서비스 계정만 읽도록 제한
-- Mattermost TLS 검증은 기본 `true`; 자체 CA를 설치하는 방식을 우선하고 무조건적인 검증 해제를 피함
+- Mattermost `verify_ssl` 기본값은 `true`로 유지하되 현재 HTTP 연결에는 적용하지 않는다.
+- HTTP에서는 Mattermost token과 CouchDB 인증 정보가 전송 구간에서 암호화되지 않으므로
+  방화벽으로 해당 포트 접근을 필요한 서버 사이에만 제한한다.
 - 로그에 token, webhook URL, CouchDB 암호, 문서 본문을 남기지 않음
 - 알림 본문에는 제목과 경로만 포함하고 실제 문서 본문은 전송하지 않음
 - LiveSync Bridge 암호 설정은 notifier 설정과 분리
 
 ### LiveSync E2EE와 path obfuscation의 의미
 
-두 설정은 CouchDB에 저장되는 원격 데이터에서 무엇을 숨길지 정한다. HTTPS/TLS가
-네트워크 전송 중인 데이터를 보호하는 것과는 별개의 계층이다.
+두 설정은 CouchDB에 저장되는 원격 데이터에서 무엇을 숨길지 정한다. 네트워크 전송 구간을
+보호하는 TLS와는 별개의 계층이며, 현재 HTTP 배포에서는 전송 구간이 암호화되지 않는다.
 
 공식 설정 설명: <https://github.com/vrtmrz/obsidian-livesync/blob/main/docs/settings.md#3-privacy--encryption>
 
@@ -471,10 +474,9 @@ obsidian-mattermost-notifier/
 - [x] 고정 commit의 LiveSync Bridge를 함께 빌드하는 오프라인 bundle script
 - [x] Bridge와 notifier를 묶은 `compose.example.yaml`
 - [x] 초기 동기화 운영자 승인 marker
-- [x] read-only 설정/vault, 영속 상태, 내부 CA, SELinux mount 정책
+- [x] read-only 설정/vault, 영속 상태 및 SELinux mount 정책
 - [x] 이미지 save/load, checksum, update 및 rollback 문서
-- [ ] 운영 Rocky Linux에서 Compose 기동, SELinux 볼륨 접근 및 Mattermost TLS 연결 검증
-  (내부 CA를 사용하는 환경에만 해당 CA 적용)
+- [ ] 운영 Rocky Linux에서 Compose 기동, SELinux 볼륨 접근 및 내부 HTTP 연결 검증
 - [ ] 재부팅/네트워크 장애/보관함별 장애/이전 이미지 rollback 테스트
 
 ### Phase 4: 운영 안정화

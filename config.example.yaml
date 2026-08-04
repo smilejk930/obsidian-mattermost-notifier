@@ -1,5 +1,5 @@
 mattermost:
-  url: "https://mattermost.example.com"
+  url: "http://mattermost.internal.example"
   token: "CHANGE_ME"
   verify_ssl: true
   request_timeout_seconds: 10

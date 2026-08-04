@@ -10,14 +10,11 @@ services:
       - "20001"
     environment:
       DENO_DIR: /var/lib/livesync-bridge/deno
-      DENO_TLS_CA_STORE: system
       LSB_CONFIG: /run/secrets/livesync-bridge-config.json
       LSB_HEALTH_FILE: /tmp/livesync-bridge-health.json
-      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
       TZ: Asia/Seoul
     volumes:
       - /etc/obsidian-livesync-bridge/config.json:/run/secrets/livesync-bridge-config.json:ro,Z
-      - /etc/obsidian-container/ca-bundle.pem:/etc/ssl/certs/ca-certificates.crt:ro,z
       - /etc/localtime:/etc/localtime:ro
       - /srv/obsidian/vaults:/app/data:rw,z
       - /var/lib/obsidian-livesync-bridge:/var/lib/livesync-bridge:rw,Z
@@ -53,12 +50,9 @@ services:
         condition: service_healthy
     environment:
       NOTIFIER_READINESS_FILE: /var/lib/obsidian-mattermost-notifier/bridge-initial-sync.complete
-      REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
-      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
       TZ: Asia/Seoul
     volumes:
       - /etc/obsidian-mattermost-notifier/config.yaml:/etc/obsidian-mattermost-notifier/config.yaml:ro,Z
-      - /etc/obsidian-container/ca-bundle.pem:/etc/ssl/certs/ca-certificates.crt:ro,z
       - /etc/localtime:/etc/localtime:ro
       - /srv/obsidian/vaults:/srv/obsidian/vaults:ro,z
       - /var/lib/obsidian-mattermost-notifier:/var/lib/obsidian-mattermost-notifier:rw,Z
