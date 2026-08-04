@@ -30,7 +30,7 @@ services:
         - CMD
         - deno
         - eval
-        - "const h=JSON.parse(await Deno.readTextFile('/tmp/livesync-bridge-health.json')); if (!h.ok || Date.now() - h.ts > 30000) Deno.exit(1);"
+        - "const h=JSON.parse(await Deno.readTextFile('/tmp/livesync-bridge-health.json')); if (!Number.isFinite(h.ts) || h.restartWorthy === true || Date.now() - h.ts > 30000) Deno.exit(1);"
       interval: 15s
       timeout: 10s
       retries: 5

@@ -411,6 +411,19 @@ LiveSync Bridge Deno 캐시를 초기화합니다: /var/lib/livesync-bridge/deno
 `JSR package manifest ... failed to load`가 발생한다면 `.env`가 새 Bridge 이미지 태그를
 가리키는지와 `docker image load -i images.tar`를 실행했는지 먼저 확인한다.
 
+Bridge의 `healthy`는 heartbeat가 갱신되고, 이미 정상 동작한 peer가 장시간 고장 나 재시작이
+필요한 상태가 아니라는 뜻이다. 최초 CouchDB 연결이나 파일 스캔이 완료됐다는 뜻은 아니다.
+실제 동기화 상태는 heartbeat의 `ok`와 `peers`를 확인한다.
+
+```bash
+docker compose exec livesync-bridge \
+  sh -c 'cat /tmp/livesync-bridge-health.json'
+```
+
+최초 연결 중에는 `ok: false`와 `detail: "connecting"` 또는 `detail: "starting"`이 나올 수
+있다. 이 상태만으로 컨테이너를 재시작하면 초기화가 반복되므로 healthcheck 실패로 처리하지
+않는다. 초기 동기화 완료 여부는 다음 절처럼 Bridge 로그와 실제 vault 파일을 함께 확인한다.
+
 ### 5. 최초 동기화 승인 marker
 
 최초 기동에서 notifier는 다음 marker가 생길 때까지 실제 애플리케이션을 시작하지 않는다.
