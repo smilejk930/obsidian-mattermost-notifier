@@ -118,3 +118,42 @@ def test_change_me_token_and_string_boolean_are_rejected(tmp_path: Path) -> None
     raw["mattermost"]["verify_ssl"] = "false"
     with pytest.raises(ConfigError, match="true 또는 false"):
         parse_config(raw)
+
+
+def test_retry_and_timeout_settings_are_parsed(tmp_path: Path) -> None:
+    raw = config_data(tmp_path)
+    raw["mattermost"].update(
+        {
+            "request_timeout_seconds": 7.5,
+            "immediate_retry_attempts": 4,
+            "retry_base_seconds": 2,
+            "retry_max_seconds": 120,
+            "retry_jitter_ratio": 0.1,
+        }
+    )
+
+    mattermost = parse_config(raw).mattermost
+
+    assert mattermost.request_timeout_seconds == 7.5
+    assert mattermost.immediate_retry_attempts == 4
+    assert mattermost.retry_base_seconds == 2
+    assert mattermost.retry_max_seconds == 120
+    assert mattermost.retry_jitter_ratio == 0.1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("request_timeout_seconds", 0),
+        ("immediate_retry_attempts", 1.5),
+        ("retry_base_seconds", -1),
+        ("retry_jitter_ratio", 1.1),
+    ],
+)
+def test_invalid_retry_settings_are_rejected(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    raw = config_data(tmp_path)
+    raw["mattermost"][field] = value
+    with pytest.raises(ConfigError, match=field):
+        parse_config(raw)

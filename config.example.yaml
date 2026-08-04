@@ -2,6 +2,11 @@ mattermost:
   url: "https://mattermost.example.com"
   token: "CHANGE_ME"
   verify_ssl: true
+  request_timeout_seconds: 10
+  immediate_retry_attempts: 3
+  retry_base_seconds: 1
+  retry_max_seconds: 300
+  retry_jitter_ratio: 0.2
 
 obsidian_notifications:
   - enabled: true

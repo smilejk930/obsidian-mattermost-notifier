@@ -2,22 +2,33 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import requests
 
 from obsidian_mattermost_notifier.config import MattermostConfig, VaultConfig
-from obsidian_mattermost_notifier.mattermost import MattermostClient, MattermostError
+from obsidian_mattermost_notifier.mattermost import (
+    MattermostClient,
+    MattermostRequestError,
+)
 
 
 class FakeResponse:
-    def __init__(self, data: object, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        data: object,
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        json_error: Exception | None = None,
+    ) -> None:
         self.data = data
-        self.error = error
-
-    def raise_for_status(self) -> None:
-        if self.error:
-            raise self.error
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.json_error = json_error
 
     def json(self) -> object:
+        if self.json_error:
+            raise self.json_error
         return self.data
 
 
@@ -27,16 +38,22 @@ class FakeSession:
         self.verify = True
         self.get_response = FakeResponse({"id": "resolved-channel"})
         self.post_response = FakeResponse({"id": "post-123"})
+        self.get_error: Exception | None = None
+        self.post_error: Exception | None = None
         self.get_calls: list[tuple[str, float]] = []
         self.post_calls: list[tuple[str, dict[str, str], float]] = []
         self.closed = False
 
     def get(self, url: str, *, timeout: float) -> FakeResponse:
         self.get_calls.append((url, timeout))
+        if self.get_error:
+            raise self.get_error
         return self.get_response
 
     def post(self, url: str, *, json: dict[str, str], timeout: float) -> FakeResponse:
         self.post_calls.append((url, json, timeout))
+        if self.post_error:
+            raise self.post_error
         return self.post_response
 
     def close(self) -> None:
@@ -64,6 +81,22 @@ def client_with_fake() -> tuple[MattermostClient, FakeSession]:
         timeout=7,
     )
     return client, session
+
+
+def test_validate_auth_success_and_failure_are_safe() -> None:
+    client, session = client_with_fake()
+    session.get_response = FakeResponse({"id": "user-1"})
+    client.validate_auth()
+    assert session.get_calls[0][0].endswith("/api/v4/users/me")
+
+    session.get_response = FakeResponse(
+        {"message": "token=must-not-leak"}, status_code=401
+    )
+    with pytest.raises(MattermostRequestError) as raised:
+        client.validate_auth()
+    assert raised.value.code == "http_401"
+    assert not raised.value.retryable
+    assert "must-not-leak" not in str(raised.value)
 
 
 def test_resolve_channel_and_post_with_mock_session() -> None:
@@ -97,16 +130,55 @@ def test_explicit_channel_id_skips_lookup() -> None:
     assert session.get_calls == []
 
 
-def test_http_errors_are_safe_mattermost_errors() -> None:
+@pytest.mark.parametrize("status_code", [408, 500, 503])
+def test_retryable_http_statuses_are_classified(status_code: int) -> None:
+    client, session = client_with_fake()
+    session.post_response = FakeResponse({}, status_code=status_code)
+
+    with pytest.raises(MattermostRequestError) as raised:
+        client.post_message("channel", "body")
+    assert raised.value.retryable
+    assert raised.value.code == f"http_{status_code}"
+
+
+def test_rate_limit_honors_retry_after() -> None:
     client, session = client_with_fake()
     session.post_response = FakeResponse(
-        {}, requests.HTTPError("401 token=do-not-copy")
+        {}, status_code=429, headers={"Retry-After": "17"}
     )
 
-    try:
+    with pytest.raises(MattermostRequestError) as raised:
         client.post_message("channel", "body")
-    except MattermostError as exc:
-        assert str(exc) == "Mattermost 게시 요청에 실패했습니다."
-        assert "do-not-copy" not in str(exc)
-    else:
-        raise AssertionError("MattermostError was not raised")
+    assert raised.value.retryable
+    assert raised.value.retry_after == 17
+
+
+def test_timeout_and_connection_error_are_retryable() -> None:
+    client, session = client_with_fake()
+    for error, code in (
+        (requests.Timeout("secret timeout detail"), "timeout"),
+        (requests.ConnectionError("secret connection detail"), "connection_error"),
+    ):
+        session.post_error = error
+        with pytest.raises(MattermostRequestError) as raised:
+            client.post_message("channel", "body")
+        assert raised.value.retryable
+        assert raised.value.code == code
+        assert "secret" not in str(raised.value)
+
+
+def test_nonretryable_400_and_invalid_json() -> None:
+    client, session = client_with_fake()
+    session.post_response = FakeResponse({"token": "hidden"}, status_code=400)
+    with pytest.raises(MattermostRequestError) as raised:
+        client.post_message("channel", "body")
+    assert not raised.value.retryable
+    assert raised.value.code == "http_400"
+    assert "hidden" not in str(raised.value)
+
+    session.post_response = FakeResponse({}, json_error=ValueError("secret response"))
+    with pytest.raises(MattermostRequestError) as raised:
+        client.post_message("channel", "body")
+    assert not raised.value.retryable
+    assert raised.value.code == "invalid_json"
+    assert "secret" not in str(raised.value)

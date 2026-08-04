@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from typing import ClassVar
 
+import pytest
+
 from obsidian_mattermost_notifier.config import VaultConfig, parse_config
+from obsidian_mattermost_notifier.mattermost import MattermostRequestError
 from obsidian_mattermost_notifier.service import NotifierService
 
 
@@ -12,13 +17,23 @@ class FakePublisher:
         self.posts: list[tuple[str, str]] = []
         self.fail_posts = fail_posts
         self.closed = False
+        self.auth_calls = 0
+        self.post_attempts = 0
+
+    def validate_auth(self) -> None:
+        self.auth_calls += 1
 
     def channel_id_for(self, vault: object) -> str:
         return "channel-1"
 
     def post_message(self, channel_id: str, message: str) -> str:
+        self.post_attempts += 1
         if self.fail_posts:
-            raise RuntimeError("temporary outage")
+            raise MattermostRequestError(
+                "temporary outage",
+                code="connection_error",
+                retryable=True,
+            )
         self.posts.append((channel_id, message))
         return f"post-{len(self.posts)}"
 
@@ -86,6 +101,15 @@ def app_config(tmp_path: Path):
     )
 
 
+def wait_until(predicate, *, timeout: float = 2) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition was not met before timeout")
+
+
 def test_first_start_baselines_and_restart_posts_file_created_while_down(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -110,6 +134,7 @@ def test_first_start_baselines_and_restart_posts_file_created_while_down(
     second = NotifierService(config, publisher=second_publisher)
     try:
         second.start()
+        wait_until(lambda: len(second_publisher.posts) == 1)
         assert len(second_publisher.posts) == 1
         _, message = second_publisher.posts[0]
         assert "Created while stopped" in message
@@ -133,13 +158,18 @@ def test_failed_post_stays_pending_for_next_restart(
     document = config.enabled_vaults[0].vault_path / "retry.md"
     document.write_text("# Retry", encoding="utf-8")
     failed = NotifierService(config, publisher=FakePublisher(fail_posts=True))
-    failed.start()
-    failed.stop()
+    failed_publisher = failed._publisher
+    try:
+        failed.start()
+        wait_until(lambda: failed_publisher.post_attempts == 1)
+    finally:
+        failed.stop()
 
     recovered_publisher = FakePublisher()
     recovered = NotifierService(config, publisher=recovered_publisher)
     try:
         recovered.start()
+        wait_until(lambda: len(recovered_publisher.posts) == 1)
         assert len(recovered_publisher.posts) == 1
     finally:
         recovered.stop()
@@ -186,3 +216,126 @@ def test_one_vault_failure_does_not_stop_others_and_is_retried(
         assert publisher.channel_calls == ["broken", "healthy", "broken"]
     finally:
         service.stop()
+
+
+def test_nonretryable_channel_failure_does_not_loop_or_stop_other_vault(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "obsidian_mattermost_notifier.service.VaultWatcher", FakeWatcher
+    )
+    broken = tmp_path / "broken"
+    healthy = tmp_path / "healthy"
+    broken.mkdir()
+    healthy.mkdir()
+    config = parse_config(
+        {
+            "mattermost": {
+                "url": "https://mattermost.example.com",
+                "token": "test-token",
+            },
+            "obsidian_notifications": [
+                {
+                    "vault_path": str(broken),
+                    "vault_name": "broken",
+                    "channel_id": "broken-channel",
+                },
+                {
+                    "vault_path": str(healthy),
+                    "vault_name": "healthy",
+                    "channel_id": "healthy-channel",
+                },
+            ],
+            "state": {"database_path": str(tmp_path / "state" / "notifier.db")},
+        }
+    )
+
+    class ForbiddenChannelPublisher(FakePublisher):
+        def __init__(self) -> None:
+            super().__init__()
+            self.channel_calls: list[str] = []
+
+        def channel_id_for(self, vault: VaultConfig) -> str:
+            self.channel_calls.append(vault.vault_name)
+            if vault.vault_name == "broken":
+                raise MattermostRequestError(
+                    "forbidden",
+                    code="http_403",
+                    retryable=False,
+                    status_code=403,
+                )
+            return "healthy-channel"
+
+    publisher = ForbiddenChannelPublisher()
+    service = NotifierService(config, publisher=publisher)
+    try:
+        service.start()
+        service.restart_failed_watchers()
+        assert publisher.channel_calls == ["broken", "healthy"]
+    finally:
+        service.stop()
+
+
+def test_authentication_is_validated_before_watchers_start(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "obsidian_mattermost_notifier.service.VaultWatcher", FakeWatcher
+    )
+    FakeWatcher.instances.clear()
+    config = app_config(tmp_path)
+
+    class RejectedPublisher(FakePublisher):
+        def validate_auth(self) -> None:
+            raise MattermostRequestError(
+                "Mattermost 인증 검증 실패 (HTTP 401).",
+                code="http_401",
+                retryable=False,
+                status_code=401,
+            )
+
+    publisher = RejectedPublisher()
+    service = NotifierService(config, publisher=publisher)
+    try:
+        with pytest.raises(MattermostRequestError):
+            service.start()
+        assert FakeWatcher.instances == []
+    finally:
+        service.stop()
+
+
+def test_watchdog_callback_does_not_wait_for_slow_mattermost(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "obsidian_mattermost_notifier.service.VaultWatcher", FakeWatcher
+    )
+    FakeWatcher.instances.clear()
+    config = app_config(tmp_path)
+    post_started = threading.Event()
+    release_post = threading.Event()
+
+    class SlowPublisher(FakePublisher):
+        def post_message(self, channel_id: str, message: str) -> str:
+            post_started.set()
+            release_post.wait(timeout=2)
+            return super().post_message(channel_id, message)
+
+    publisher = SlowPublisher()
+    service = NotifierService(config, publisher=publisher)
+    service.start()
+    try:
+        document = config.enabled_vaults[0].vault_path / "new.md"
+        document.write_text("# New", encoding="utf-8")
+        callback = FakeWatcher.instances[-1].on_file
+        started_at = time.monotonic()
+        callback(document)
+        elapsed = time.monotonic() - started_at
+
+        assert elapsed < 0.1
+        assert post_started.wait(timeout=1)
+    finally:
+        release_post.set()
+        service.stop()
+    assert publisher.closed
+    assert not service._delivery_worker.is_alive

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -92,5 +93,105 @@ def test_failed_delivery_remains_pending(tmp_path: Path) -> None:
         assert should_notify
         assert record.status == "pending"
         assert [item.relative_path for item in store.pending("vault")] == ["new.md"]
+    finally:
+        store.close()
+
+
+def test_retry_schedule_and_nonretryable_block_are_persisted(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "notifier.db")
+    try:
+        store.reconcile("vault", [], observed_at=NOW)
+        store.observe_new("vault", FileSnapshot("new.md", 1, 1), observed_at=NOW)
+        assert [
+            item.relative_path for item in store.due_pending(["vault"], now=NOW)
+        ] == ["new.md"]
+
+        retry_at = NOW + timedelta(seconds=30)
+        store.mark_delivery_failure(
+            "vault",
+            "new.md",
+            generation=1,
+            error_code="http_503",
+            next_retry_at=retry_at,
+        )
+        assert store.due_pending(["vault"], now=NOW + timedelta(seconds=29)) == []
+        assert store.due_pending(["vault"], now=retry_at)[0].attempt_count == 1
+
+        store.mark_delivery_failure(
+            "vault",
+            "new.md",
+            generation=1,
+            error_code="http_403",
+            next_retry_at=None,
+        )
+        record = store.get("vault", "new.md")
+        assert record is not None
+        assert record.attempt_count == 2
+        assert record.next_retry_at is None
+        assert record.last_error == "http_403"
+        assert store.due_pending(["vault"], now=NOW + timedelta(days=1)) == []
+
+        store.resume_pending(resumed_at=NOW + timedelta(days=1))
+        assert len(store.due_pending(["vault"], now=NOW + timedelta(days=1))) == 1
+    finally:
+        store.close()
+
+
+def test_phase1_database_is_migrated_without_losing_pending_rows(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "phase1.db"
+    connection = sqlite3.connect(database)
+    with connection:
+        connection.execute(
+            "CREATE TABLE vaults (vault_name TEXT PRIMARY KEY, initialized_at TEXT NOT NULL)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE documents (
+                vault_name TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                generation INTEGER NOT NULL DEFAULT 1,
+                size INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                first_observed_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                post_id TEXT,
+                notified_at TEXT,
+                present INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (vault_name, relative_path)
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO vaults VALUES (?, ?)", ("vault", NOW.isoformat())
+        )
+        connection.execute(
+            """
+            INSERT INTO documents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "vault",
+                "pending.md",
+                1,
+                10,
+                100,
+                NOW.isoformat(),
+                "pending",
+                None,
+                None,
+                1,
+            ),
+        )
+    connection.close()
+
+    store = StateStore(database)
+    try:
+        record = store.get("vault", "pending.md")
+        assert record is not None
+        assert record.status == "pending"
+        assert record.attempt_count == 0
+        assert record.next_retry_at == NOW
+        assert record.last_error is None
     finally:
         store.close()

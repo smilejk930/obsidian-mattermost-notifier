@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -18,6 +19,11 @@ class MattermostConfig:
     url: str
     token: str
     verify_ssl: bool = True
+    request_timeout_seconds: float = 10.0
+    immediate_retry_attempts: int = 3
+    retry_base_seconds: float = 1.0
+    retry_max_seconds: float = 300.0
+    retry_jitter_ratio: float = 0.2
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +88,32 @@ def parse_config(raw: object, *, validate_paths: bool = True) -> AppConfig:
     verify_ssl = _boolean(
         mattermost_raw.get("verify_ssl", True), "mattermost.verify_ssl"
     )
+    request_timeout_seconds = _positive_number(
+        mattermost_raw.get("request_timeout_seconds", 10),
+        "mattermost.request_timeout_seconds",
+    )
+    immediate_retry_attempts = _nonnegative_integer(
+        mattermost_raw.get("immediate_retry_attempts", 3),
+        "mattermost.immediate_retry_attempts",
+    )
+    retry_base_seconds = _positive_number(
+        mattermost_raw.get("retry_base_seconds", 1),
+        "mattermost.retry_base_seconds",
+    )
+    retry_max_seconds = _positive_number(
+        mattermost_raw.get("retry_max_seconds", 300),
+        "mattermost.retry_max_seconds",
+    )
+    if retry_max_seconds < retry_base_seconds:
+        raise ConfigError(
+            "mattermost.retry_max_seconds는 retry_base_seconds 이상이어야 합니다."
+        )
+    retry_jitter_ratio = _number_in_range(
+        mattermost_raw.get("retry_jitter_ratio", 0.2),
+        "mattermost.retry_jitter_ratio",
+        minimum=0,
+        maximum=1,
+    )
 
     notifications_raw = root.get("obsidian_notifications")
     if not isinstance(notifications_raw, list) or not notifications_raw:
@@ -136,7 +168,16 @@ def parse_config(raw: object, *, validate_paths: bool = True) -> AppConfig:
         raise ConfigError(f"지원하지 않는 logging.level입니다: {level}")
 
     return AppConfig(
-        mattermost=MattermostConfig(url=url, token=token, verify_ssl=verify_ssl),
+        mattermost=MattermostConfig(
+            url=url,
+            token=token,
+            verify_ssl=verify_ssl,
+            request_timeout_seconds=request_timeout_seconds,
+            immediate_retry_attempts=immediate_retry_attempts,
+            retry_base_seconds=retry_base_seconds,
+            retry_max_seconds=retry_max_seconds,
+            retry_jitter_ratio=retry_jitter_ratio,
+        ),
         obsidian_notifications=vaults,
         state=StateConfig(database_path=database_path),
         logging=LoggingConfig(level=level),
@@ -194,7 +235,7 @@ def _parse_vault(index: int, item: object, *, validate_paths: bool) -> VaultConf
     if isinstance(settle_raw, bool) or not isinstance(settle_raw, (int, float)):
         raise ConfigError(f"{prefix}.settle_seconds는 0 이상의 숫자여야 합니다.")
     settle_seconds = float(settle_raw)
-    if settle_seconds < 0:
+    if not math.isfinite(settle_seconds) or settle_seconds < 0:
         raise ConfigError(f"{prefix}.settle_seconds는 0 이상이어야 합니다.")
 
     return VaultConfig(
@@ -231,6 +272,32 @@ def _boolean(value: object, field: str) -> bool:
     if not isinstance(value, bool):
         raise ConfigError(f"{field}는 true 또는 false여야 합니다.")
     return value
+
+
+def _positive_number(value: object, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{field}는 0보다 큰 숫자여야 합니다.")
+    result = float(value)
+    if not math.isfinite(result) or result <= 0:
+        raise ConfigError(f"{field}는 0보다 큰 숫자여야 합니다.")
+    return result
+
+
+def _nonnegative_integer(value: object, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigError(f"{field}는 0 이상의 정수여야 합니다.")
+    return value
+
+
+def _number_in_range(
+    value: object, field: str, *, minimum: float, maximum: float
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{field}는 {minimum} 이상 {maximum} 이하의 숫자여야 합니다.")
+    result = float(value)
+    if not math.isfinite(result) or not minimum <= result <= maximum:
+        raise ConfigError(f"{field}는 {minimum} 이상 {maximum} 이하이어야 합니다.")
+    return result
 
 
 def _is_within(path: Path, directory: Path) -> bool:

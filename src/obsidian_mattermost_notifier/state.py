@@ -27,6 +27,9 @@ class DocumentRecord:
     post_id: str | None
     notified_at: datetime | None
     present: bool
+    attempt_count: int
+    next_retry_at: datetime | None
+    last_error: str | None
 
 
 class StateStore:
@@ -62,11 +65,15 @@ class StateStore:
                     post_id TEXT,
                     notified_at TEXT,
                     present INTEGER NOT NULL DEFAULT 1 CHECK (present IN (0, 1)),
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_retry_at TEXT,
+                    last_error TEXT,
                     PRIMARY KEY (vault_name, relative_path),
                     FOREIGN KEY (vault_name) REFERENCES vaults(vault_name) ON DELETE CASCADE
                 )
                 """
             )
+            self._migrate_schema()
 
     def is_initialized(self, vault_name: str) -> bool:
         with self._lock:
@@ -149,13 +156,15 @@ class StateStore:
                         """
                         UPDATE documents
                         SET generation = ?, size = ?, mtime_ns = ?, first_observed_at = ?,
-                            status = 'pending', post_id = NULL, notified_at = NULL, present = 1
+                            status = 'pending', post_id = NULL, notified_at = NULL, present = 1,
+                            attempt_count = 0, next_retry_at = ?, last_error = NULL
                         WHERE vault_name = ? AND relative_path = ?
                         """,
                         (
                             int(row["generation"]) + 1,
                             snapshot.size,
                             snapshot.mtime_ns,
+                            _serialize_time(now),
                             _serialize_time(now),
                             vault_name,
                             relative_path,
@@ -199,13 +208,15 @@ class StateStore:
                     """
                     UPDATE documents
                     SET generation = ?, size = ?, mtime_ns = ?, first_observed_at = ?,
-                        status = 'pending', post_id = NULL, notified_at = NULL, present = 1
+                        status = 'pending', post_id = NULL, notified_at = NULL, present = 1,
+                        attempt_count = 0, next_retry_at = ?, last_error = NULL
                     WHERE vault_name = ? AND relative_path = ?
                     """,
                     (
                         int(row["generation"]) + 1,
                         snapshot.size,
                         snapshot.mtime_ns,
+                        _serialize_time(now),
                         _serialize_time(now),
                         vault_name,
                         snapshot.relative_path,
@@ -250,7 +261,9 @@ class StateStore:
         with self._lock, self._connection:
             cursor = self._connection.execute(
                 """
-                UPDATE documents SET status = 'sent', post_id = ?, notified_at = ?
+                UPDATE documents
+                SET status = 'sent', post_id = ?, notified_at = ?,
+                    next_retry_at = NULL, last_error = NULL
                 WHERE vault_name = ? AND relative_path = ?
                     AND generation = ? AND status = 'pending'
                 """,
@@ -266,6 +279,97 @@ class StateStore:
                 raise KeyError(
                     f"pending 문서를 찾을 수 없습니다: {vault_name}/{normalized}"
                 )
+
+    def mark_delivery_failure(
+        self,
+        vault_name: str,
+        relative_path: str,
+        *,
+        generation: int,
+        error_code: str,
+        next_retry_at: datetime | None,
+    ) -> None:
+        normalized = normalize_relative_path(relative_path)
+        serialized_retry = (
+            _serialize_time(next_retry_at) if next_retry_at is not None else None
+        )
+        safe_error = error_code[:200]
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """
+                UPDATE documents
+                SET attempt_count = attempt_count + 1,
+                    next_retry_at = ?, last_error = ?
+                WHERE vault_name = ? AND relative_path = ?
+                    AND generation = ? AND status = 'pending' AND present = 1
+                """,
+                (
+                    serialized_retry,
+                    safe_error,
+                    vault_name,
+                    normalized,
+                    generation,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(
+                    f"pending 문서를 찾을 수 없습니다: {vault_name}/{normalized}"
+                )
+
+    def resume_pending(self, *, resumed_at: datetime | None = None) -> None:
+        now = _as_utc(resumed_at or datetime.now(UTC))
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                UPDATE documents SET next_retry_at = ?
+                WHERE status = 'pending' AND present = 1
+                """,
+                (_serialize_time(now),),
+            )
+
+    def due_pending(
+        self,
+        vault_names: Iterable[str],
+        *,
+        now: datetime | None = None,
+        limit: int = 100,
+    ) -> list[DocumentRecord]:
+        names = tuple(dict.fromkeys(vault_names))
+        if not names:
+            return []
+        current = _as_utc(now or datetime.now(UTC))
+        placeholders = ",".join("?" for _ in names)
+        with self._lock:
+            rows = self._connection.execute(
+                f"""
+                SELECT * FROM documents
+                WHERE vault_name IN ({placeholders})
+                    AND status = 'pending' AND present = 1
+                    AND next_retry_at IS NOT NULL AND next_retry_at <= ?
+                ORDER BY next_retry_at, first_observed_at, relative_path
+                LIMIT ?
+                """,
+                (*names, _serialize_time(current), limit),
+            ).fetchall()
+        return [_record(row) for row in rows]
+
+    def next_retry_time(self, vault_names: Iterable[str]) -> datetime | None:
+        names = tuple(dict.fromkeys(vault_names))
+        if not names:
+            return None
+        placeholders = ",".join("?" for _ in names)
+        with self._lock:
+            row = self._connection.execute(
+                f"""
+                SELECT MIN(next_retry_at) AS next_retry_at FROM documents
+                WHERE vault_name IN ({placeholders})
+                    AND status = 'pending' AND present = 1
+                    AND next_retry_at IS NOT NULL
+                """,
+                names,
+            ).fetchone()
+        value = row["next_retry_at"] if row is not None else None
+        return _parse_time(value) if value else None
 
     def pending(self, vault_name: str) -> list[DocumentRecord]:
         with self._lock:
@@ -290,6 +394,30 @@ class StateStore:
             (vault_name, _serialize_time(now)),
         )
 
+    def _migrate_schema(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(documents)")
+        }
+        migrations = {
+            "attempt_count": (
+                "ALTER TABLE documents ADD COLUMN "
+                "attempt_count INTEGER NOT NULL DEFAULT 0"
+            ),
+            "next_retry_at": "ALTER TABLE documents ADD COLUMN next_retry_at TEXT",
+            "last_error": "ALTER TABLE documents ADD COLUMN last_error TEXT",
+        }
+        for column, statement in migrations.items():
+            if column not in columns:
+                self._connection.execute(statement)
+        self._connection.execute(
+            """
+            UPDATE documents SET next_retry_at = first_observed_at
+            WHERE status = 'pending' AND next_retry_at IS NULL
+            """
+        )
+        self._connection.execute("PRAGMA user_version = 2")
+
     def _insert_pending(
         self, vault_name: str, snapshot: FileSnapshot, now: datetime, *, generation: int
     ) -> None:
@@ -297,8 +425,8 @@ class StateStore:
             """
             INSERT INTO documents(
                 vault_name, relative_path, generation, size, mtime_ns,
-                first_observed_at, status, present
-            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 1)
+                first_observed_at, status, present, next_retry_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 1, ?)
             """,
             (
                 vault_name,
@@ -306,6 +434,7 @@ class StateStore:
                 generation,
                 snapshot.size,
                 snapshot.mtime_ns,
+                _serialize_time(now),
                 _serialize_time(now),
             ),
         )
@@ -352,6 +481,11 @@ def _record(row: sqlite3.Row) -> DocumentRecord:
         post_id=row["post_id"],
         notified_at=_parse_time(row["notified_at"]) if row["notified_at"] else None,
         present=bool(row["present"]),
+        attempt_count=int(row["attempt_count"]),
+        next_retry_at=(
+            _parse_time(row["next_retry_at"]) if row["next_retry_at"] else None
+        ),
+        last_error=row["last_error"],
     )
 
 
