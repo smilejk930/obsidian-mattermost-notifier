@@ -238,6 +238,128 @@ vi /data/obsidian-mattermost-notifier/config/livesync-bridge/config.json
   `/srv/obsidian/vaults/<vault-directory>`이다. 두 값 모두 컨테이너 내부 경로이며, 호스트에서는
   `/data/obsidian-mattermost-notifier/vaults/<vault-directory>`에 저장된다.
 
+#### LiveSync Bridge 설정
+
+vault 하나에는 같은 `group`을 사용하는 `couchdb` peer와 `storage` peer가 한 쌍 필요하다.
+다음 예시는 CouchDB의 `example_vault` 데이터베이스를 서버의 `example_vault` 디렉터리로
+물질화한다.
+
+```json
+{
+  "peers": [
+    {
+      "type": "couchdb",
+      "name": "example-vault-remote",
+      "group": "example-vault",
+      "database": "example_vault",
+      "username": "CHANGE_ME",
+      "password": "CHANGE_ME",
+      "url": "http://couchdb.internal.example:5984",
+      "passphrase": "CHANGE_ME",
+      "obfuscatePassphrase": "CHANGE_ME",
+      "baseDir": "",
+      "useRemoteTweaks": true
+    },
+    {
+      "type": "storage",
+      "name": "example-vault-storage",
+      "group": "example-vault",
+      "baseDir": "data/example_vault/",
+      "scanOfflineChanges": false,
+      "useChokidar": false
+    }
+  ]
+}
+```
+
+| 항목 | 설명 |
+| --- | --- |
+| `peers` | Bridge가 연결할 CouchDB 및 파일 저장소 목록이다. vault가 여러 개면 peer 쌍을 반복해서 추가한다. |
+| `type` | `couchdb`는 원격 LiveSync DB, `storage`는 서버 파일시스템을 뜻한다. |
+| `name` | 설정 파일 안에서 peer를 구분하는 고유 이름이다. CouchDB DB명이나 Obsidian vault 이름과 같을 필요는 없다. |
+| `group` | 같은 vault에 속한 peer를 연결한다. 한 쌍에는 같은 값을 사용하고 서로 다른 vault에는 다른 값을 사용한다. |
+| `database` | Obsidian Self-hosted LiveSync에 설정된 실제 CouchDB DB명이다. Fauxton의 `_users`, `_replicator` 같은 시스템 DB는 지정하지 않는다. |
+| `username`, `password` | 해당 DB에 접근할 CouchDB 자격 증명이다. Mattermost 토큰과는 별개다. |
+| `url` | CouchDB 기본 주소만 지정한다. Fauxton 관리 화면 경로인 `/_utils/#/_all_dbs`는 포함하지 않는다. |
+| `passphrase` | 해당 vault의 LiveSync E2EE passphrase다. E2EE를 사용하지 않을 때만 빈 문자열로 둔다. |
+| `obfuscatePassphrase` | 해당 vault의 path obfuscation passphrase다. 기능을 사용하지 않을 때만 빈 문자열로 둔다. |
+| CouchDB `baseDir` | 원격 vault 안의 일부 하위 경로만 공유할 때 사용한다. 빈 문자열은 vault 전체를 뜻한다. |
+| `useRemoteTweaks` | 원격 DB에 저장된 LiveSync 조정값을 적용하고 설정 호환성을 확인한다. |
+| storage `baseDir` | Bridge 컨테이너의 파일 저장 경로다. Compose 구성에서는 반드시 `data/<vault-directory>/` 아래를 사용한다. |
+| `scanOfflineChanges` | 시작할 때 storage에 이미 있던 파일을 원격 변경으로 스캔할지 정한다. 최초 CouchDB → 빈 mirror 구성에서는 `false`를 유지한다. |
+| `useChokidar` | 기본 Deno 파일 감시 대신 Chokidar를 사용할지 정한다. Linux에서 기본 감시에 문제가 없으면 `false`를 유지한다. |
+
+같은 `group`에 속한 모든 peer 사이에서 변경이 전달되므로, 서로 다른 vault에 같은 `group`을
+재사용하면 데이터가 섞일 수 있다. 다중 vault는 다음과 같이 각 쌍을 분리한다.
+
+```text
+CouchDB example_vault  <─ group: example-vault ─>  data/example_vault/
+CouchDB team_docs      <─ group: team-docs     ─>  data/team_docs/
+```
+
+#### notifier 설정
+
+다음 예시는 Mattermost의 `engineering` 팀과 `dev-docs` 채널에 `example_vault`의 새 문서
+알림을 보낸다. Mattermost 채널 URL이
+`http://mattermost.internal.example:8065/engineering/channels/dev-docs`라면 URL의 두 경로
+조각을 각각 `team_name`과 `channel_name`으로 사용한다.
+
+```yaml
+mattermost:
+  url: "http://mattermost.internal.example:8065"
+  token: "CHANGE_ME"
+  verify_ssl: true
+  request_timeout_seconds: 10
+  immediate_retry_attempts: 3
+  retry_base_seconds: 1
+  retry_max_seconds: 300
+  retry_jitter_ratio: 0.2
+
+obsidian_notifications:
+  - enabled: true
+    vault_path: "/srv/obsidian/vaults/example_vault"
+    vault_name: "example_vault"
+    team_name: "engineering"
+    channel_name: "dev-docs"
+    ignore_folders:
+      - ".obsidian"
+      - ".trash"
+      - "images"
+      - "templates"
+    settle_seconds: 2
+
+state:
+  database_path: "/var/lib/obsidian-mattermost-notifier/notifier.db"
+
+logging:
+  level: "INFO"
+```
+
+| 항목 | 설명 |
+| --- | --- |
+| `mattermost.url` | Mattermost 기본 주소다. 팀 및 채널 경로는 포함하지 않는다. |
+| `mattermost.token` | 알림 전송 전용 Bot token을 사용한다. 설정 파일 밖에 노출하거나 Git에 커밋하지 않는다. |
+| `verify_ssl` | HTTPS 인증서 검증 여부다. HTTP 연결에는 적용되지 않으며 향후 HTTPS 전환을 위해 `true`를 유지한다. |
+| `request_timeout_seconds` | Mattermost HTTP 요청 한 번의 제한 시간이다. |
+| `immediate_retry_attempts` | 일시적 오류가 발생했을 때 즉시 재시도할 최대 횟수다. |
+| `retry_base_seconds` | 지수 backoff의 최초 기준 지연 시간이다. |
+| `retry_max_seconds` | 지속 재시도 사이의 최대 지연 시간이다. |
+| `retry_jitter_ratio` | 여러 요청이 동시에 재시도되는 현상을 줄이기 위해 지연 시간에 적용할 무작위 비율이다. |
+| `enabled` | `false`이면 해당 vault의 경로를 검사하거나 감시하지 않는다. |
+| `vault_path` | notifier **컨테이너 내부** vault 경로다. 호스트 `/data/.../vaults` 경로를 직접 쓰지 않는다. |
+| `vault_name` | 각 사용자 PC의 Obsidian에 등록된 vault 이름이다. Obsidian URI 생성과 중복 식별에 사용한다. |
+| `team_name` | Mattermost 팀 표시명이 아니라 팀 URL에 나타나는 이름이다. |
+| `channel_name` | Mattermost 채널 표시명이 아니라 `/channels/` 다음에 나타나는 채널 URL 이름이다. |
+| `channel_id` | 선택 항목이다. 지정하면 `team_name`과 `channel_name` 조회를 생략하고 이 값을 우선한다. |
+| `ignore_folders` | vault 루트 기준 상대 폴더 경로다. 예를 들어 `images`는 루트의 `images/`를, `archive/private`는 해당 중첩 폴더를 제외한다. |
+| `settle_seconds` | 파일 크기와 수정 시각이 이 시간 동안 안정된 뒤 새 문서로 처리한다. |
+| `state.database_path` | notifier 컨테이너 내부 SQLite 경로다. Compose가 호스트 `state/notifier` 디렉터리를 이 위치에 연결한다. |
+| `logging.level` | 로그 수준이다. 운영 기본값은 `INFO`다. |
+
+notifier는 `.md` 파일만 처리한다. 따라서 `문서목록.base` 같은 `.base` 파일이나 이미지 파일은
+`ignore_folders`에 추가하지 않아도 자동으로 제외된다. `images`처럼 폴더 전체를 제외하려는
+항목만 지정한다.
+
 현재 운영 환경에서는 notifier의 `mattermost.url`에 `http://<Mattermost-IP>`, Bridge의
 CouchDB `url`에 `http://<CouchDB-IP>` 형식을 사용한다. CouchDB URL에는 Fauxton 관리
 화면 경로인 `/_utils/#/_all_dbs`를 넣지 않는다. `verify_ssl`은 HTTP에서는 사용되지 않지만,
