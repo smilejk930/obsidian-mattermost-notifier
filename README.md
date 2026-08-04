@@ -111,7 +111,8 @@ TLS reverse proxy를 도입한 뒤 HTTPS로 전환한다.
 스크립트는 다음 작업을 수행한다.
 
 - digest로 고정한 Python base image와 hash lock된 Python 의존성으로 notifier 이미지 빌드
-- 고정된 LiveSync Bridge commit을 clone하여 Bridge 이미지 빌드
+- 고정된 LiveSync Bridge commit을 clone하고 Deno/JSR/npm 의존성 캐시를 포함하여 Bridge 이미지 빌드
+- 네트워크를 차단한 새 컨테이너에서 Bridge 의존성을 읽을 수 있는지 자동 검증
 - 두 이미지를 하나의 `images.tar`로 저장
 - Compose 예시, 설정 예시, 이미지 태그, source revision 및 이미지 inspect 결과 포함
 - 이동식 매체 반입 중 파일 손상을 확인하기 위한 `SHA256SUMS` 생성
@@ -134,6 +135,11 @@ dist/offline-bundle-<version>-<git-sha>/
 이미 존재하는 출력 디렉터리는 덮어쓰지 않는다. 검증 목적의 미커밋 소스 빌드만
 `ALLOW_DIRTY=1`로 허용하며 이 이미지는 운영 배포에 사용하지 않는다. Bridge 버전을 바꿀
 때는 검증한 commit 전체 SHA를 명시한다.
+
+Bridge 이미지 태그에는 upstream Bridge revision과 이 프로젝트의 revision이 함께 들어간다.
+따라서 Bridge 소스가 같더라도 배포용 Dockerfile이나 시작 스크립트가 바뀌면 새 이미지로
+구분된다. 빌드 중에는 인터넷에서 Deno 의존성을 받아 이미지에 저장하지만, 자동 검증과 운영
+실행은 `--cached-only`를 사용하므로 인터넷에서 패키지를 내려받지 않는다.
 
 ```bash
 LIVESYNC_BRIDGE_REF=<verified-full-commit-sha> \
@@ -199,6 +205,8 @@ sudo install -d -o 1993 -g 20001 -m 2770 \
   vault를 직접 조회해야 할 때는 `sudo`를 사용하여 서버 미러의 우발적인 편집을 방지한다.
 - 설정 디렉터리는 setgid를 적용해 편집 후 교체된 파일도 컨테이너용 그룹을 상속하게 한다.
   운영 설정 파일은 `devsvr`와 해당 컨테이너 GID만 읽도록 `0640` 이하로 제한한다.
+- `state/livesync-bridge`에는 Bridge 상태와 실행용 Deno 캐시가 저장된다. 디렉터리가 처음에는
+  비어 있어도 되고, 새 Bridge 이미지가 처음 시작할 때 이미지에 포함된 캐시가 자동 반영된다.
 - Rocky Linux SELinux를 비활성화하지 않는다. Compose의 `z`/`Z` mount label을 유지한다.
 
 ### 4. 운영 설정 작성과 서비스 기동
@@ -391,6 +399,16 @@ docker compose up -d --pull never --no-build
 
 Compose는 `pull_policy: never`를 사용한다. 필요한 이미지가 로컬에 없으면 실패하며 외부
 registry에서 자동으로 가져오지 않는다.
+
+Bridge를 처음 시작하거나 이미지를 갱신한 직후 다음 로그가 한 번 출력되는 것은 정상이다.
+
+```text
+LiveSync Bridge Deno 캐시를 초기화합니다: /var/lib/livesync-bridge/deno
+```
+
+이후 `docker compose ps`에서 Bridge가 `healthy`가 되어야 한다. 새 번들에서도
+`JSR package manifest ... failed to load`가 발생한다면 `.env`가 새 Bridge 이미지 태그를
+가리키는지와 `docker image load -i images.tar`를 실행했는지 먼저 확인한다.
 
 ### 5. 최초 동기화 승인 marker
 

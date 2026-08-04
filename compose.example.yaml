@@ -4,7 +4,6 @@ services:
   livesync-bridge:
     image: "${LIVESYNC_BRIDGE_IMAGE:?Set LIVESYNC_BRIDGE_IMAGE in .env}"
     pull_policy: never
-    init: true
     restart: unless-stopped
     group_add:
       - "20001"
@@ -31,7 +30,6 @@ services:
         - CMD
         - deno
         - eval
-        - -A
         - "const h=JSON.parse(await Deno.readTextFile('/tmp/livesync-bridge-health.json')); if (!h.ok || Date.now() - h.ts > 30000) Deno.exit(1);"
       interval: 15s
       timeout: 10s

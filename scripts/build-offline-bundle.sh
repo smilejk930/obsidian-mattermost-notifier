@@ -53,7 +53,11 @@ git -C "${BRIDGE_SOURCE_DIR}" fetch -q --depth 1 origin "${LIVESYNC_BRIDGE_REF}"
 git -C "${BRIDGE_SOURCE_DIR}" checkout -q --detach FETCH_HEAD
 BRIDGE_REVISION="$(git -C "${BRIDGE_SOURCE_DIR}" rev-parse HEAD)"
 BRIDGE_SHORT_REVISION="$(git -C "${BRIDGE_SOURCE_DIR}" rev-parse --short=12 HEAD)"
-BRIDGE_IMAGE="livesync-bridge:${BRIDGE_SHORT_REVISION}"
+BRIDGE_IMAGE="livesync-bridge:${BRIDGE_SHORT_REVISION}-${PROJECT_SHORT_REVISION}${DIRTY_SUFFIX}"
+BRIDGE_DEPLOY_DIR="${BRIDGE_SOURCE_DIR}/.notifier-deploy"
+mkdir -p "${BRIDGE_DEPLOY_DIR}"
+cp "${REPOSITORY_DIR}/deploy/livesync-bridge/entrypoint.sh" \
+    "${BRIDGE_DEPLOY_DIR}/entrypoint.sh"
 
 DEFAULT_BUNDLE_DIR="${REPOSITORY_DIR}/dist/offline-bundle-${PROJECT_VERSION}-${PROJECT_SHORT_REVISION}${DIRTY_SUFFIX}"
 BUNDLE_DIR="${BUNDLE_DIR:-${DEFAULT_BUNDLE_DIR}}"
@@ -78,11 +82,24 @@ docker buildx build \
     --platform "${TARGET_PLATFORM}" \
     --pull \
     --load \
+    --build-arg "LIVESYNC_BRIDGE_REVISION=${BRIDGE_REVISION}" \
+    --build-arg "DEPLOYMENT_REVISION=${PROJECT_REVISION}" \
     --file "${REPOSITORY_DIR}/deploy/livesync-bridge/Dockerfile" \
     --label "org.opencontainers.image.revision=${BRIDGE_REVISION}" \
     --label "org.opencontainers.image.source=https://github.com/vrtmrz/livesync-bridge" \
     --tag "${BRIDGE_IMAGE}" \
     "${BRIDGE_SOURCE_DIR}"
+
+echo "LiveSync Bridge 오프라인 실행 검증"
+docker run --rm \
+    --platform "${TARGET_PLATFORM}" \
+    --network none \
+    --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m \
+    --tmpfs /var/lib/livesync-bridge:rw,nosuid,nodev,noexec,size=128m,uid=1993,gid=1993,mode=0750 \
+    "${BRIDGE_IMAGE}" \
+    deno eval --cached-only --frozen \
+    'await import("file:///app/PeerStorage.ts"); await import("file:///app/PeerCouchDB.ts"); await import("@std/cli"); console.log("LiveSync Bridge offline cache OK");'
 
 mkdir -p "${BUNDLE_DIR}"
 docker image save --output "${BUNDLE_DIR}/images.tar" \
