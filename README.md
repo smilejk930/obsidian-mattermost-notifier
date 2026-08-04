@@ -86,7 +86,7 @@ SQLite 연결을 순서대로 닫습니다.
 - 고정된 LiveSync Bridge commit을 clone하여 Bridge 이미지 빌드
 - 두 이미지를 하나의 `images.tar`로 저장
 - Compose 예시, 설정 예시, 이미지 태그, source revision 및 이미지 inspect 결과 포함
-- 반입 파일의 `SHA256SUMS` 생성
+- 이동식 매체 반입 중 파일 손상을 확인하기 위한 `SHA256SUMS` 생성
 
 결과는 기본적으로 다음 디렉터리에 생성된다.
 
@@ -159,6 +159,10 @@ sudo chmod 0640 \
 `data/<vault-directory>/` 형식을 사용한다.
 
 ### 3. 무결성 검증과 이미지 적재
+
+`SHA256SUMS`는 반입 과정의 우발적인 파일 손상을 확인하기 위한 값이며, 번들의 출처나
+악의적인 위변조까지 증명하는 서명은 아니다. 그런 검증이 필요하면 checksum 파일을 별도
+신뢰 채널로 전달하거나 전자서명을 추가한다.
 
 ```bash
 cd /opt/obsidian-mattermost-notifier

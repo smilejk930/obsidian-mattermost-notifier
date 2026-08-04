@@ -61,7 +61,7 @@
 ```text
 인터넷 가능 개발 PC
     -> notifier image와 고정 commit의 LiveSync Bridge image 빌드
-    -> docker image save로 images.tar 및 SHA256SUMS 생성
+    -> docker image save로 images.tar 및 전송 손상 확인용 SHA256SUMS 생성
     -> 승인된 매체로 Rocky Linux 서버에 반입
     -> docker image load
     -> 하나의 compose.yaml로 두 컨테이너 실행(pull/build 금지)
@@ -287,8 +287,9 @@ Linux에서는 Windows/macOS와 달리 신뢰할 수 있는 birth time이 항상
 - 운영 빌드는 깨끗한 Git 작업 트리와 고정된 source revision을 사용한다.
 - Python base image는 digest, Python 의존성은 버전과 wheel hash, Bridge는 commit 전체 SHA로
   고정한다.
-- 두 이미지를 `docker image save`로 하나의 `images.tar`에 담고 SHA-256 checksum과 build
-  metadata를 함께 반입한다.
+- 두 이미지를 `docker image save`로 하나의 `images.tar`에 담고 전송 중 손상 확인용
+  SHA-256 checksum과 build metadata를 함께 반입한다. checksum은 출처를 증명하는
+  전자서명을 대신하지 않는다.
 - 운영 서버에서는 `docker build`, `docker pull`, `pip install`과 Deno 패키지 다운로드를
   실행하지 않는다.
 - `compose.example.yaml`을 운영 서버에서 `compose.yaml`로 복사해 실제 경로를 작성한다.
@@ -472,7 +473,8 @@ obsidian-mattermost-notifier/
 - [x] 초기 동기화 운영자 승인 marker
 - [x] read-only 설정/vault, 영속 상태, 내부 CA, SELinux mount 정책
 - [x] 이미지 save/load, checksum, update 및 rollback 문서
-- [ ] 실제 운영 자격 증명과 내부 CA를 사용한 Rocky Linux 배포 검증
+- [ ] 운영 Rocky Linux에서 Compose 기동, SELinux 볼륨 접근 및 Mattermost TLS 연결 검증
+  (내부 CA를 사용하는 환경에만 해당 CA 적용)
 - [ ] 재부팅/네트워크 장애/보관함별 장애/이전 이미지 rollback 테스트
 
 ### Phase 4: 운영 안정화
