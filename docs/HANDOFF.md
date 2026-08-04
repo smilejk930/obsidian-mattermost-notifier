@@ -284,7 +284,7 @@ obsidian-mattermost.service
 ```text
 obsidian-mattermost-notifier/
 ├── README.md
-├── doc/
+├── docs/
 │   ├── HANDOFF.md
 │   └── PHASE2_PROMPT.md
 ├── pyproject.toml
@@ -369,7 +369,7 @@ idempotency key를 사용하지 않으므로, 유실 방지를 우선하는 at-l
 ## 16. WSL Codex 첫 요청
 
 ```text
-doc/HANDOFF.md 전체를 읽고 Phase 1을 구현해줘.
+docs/HANDOFF.md 전체를 읽고 Phase 1을 구현해줘.
 기존 mattermost-windows-toast 프로젝트는 수정하지 말고 읽기 전용 참고만 해.
 먼저 현재 저장소 상태를 확인하고, pyproject 기반 패키지와 테스트를 만든 다음 테스트 결과까지 보고해줘.
 ```

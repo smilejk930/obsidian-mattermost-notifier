@@ -101,7 +101,7 @@ python3 -m venv .venv
 
 Debian/Ubuntu 계열 WSL에서 `ensurepip is not available` 오류가 나면 먼저 배포판의 `python3-venv` 패키지가 필요합니다. Rocky Linux에서는 사용하는 Python 버전에 맞는 venv 패키지를 설치합니다.
 
-설계 배경과 단계별 요구사항은 [개발 인수인계](doc/HANDOFF.md), Phase 2 구현 요청은 [Phase 2 개발 프롬프트](doc/PHASE2_PROMPT.md)를 참고합니다. 문서의 경로와 이름은 모두 공개용 예시값입니다.
+설계 배경과 단계별 요구사항은 [개발 인수인계](docs/HANDOFF.md), Phase 2 구현 요청은 [Phase 2 개발 프롬프트](docs/PHASE2_PROMPT.md)를 참고합니다. 문서의 경로와 이름은 모두 공개용 예시값입니다.
 
 ## 프로젝트 구조
 
