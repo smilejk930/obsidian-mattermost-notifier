@@ -6,7 +6,7 @@ Phase 1 로컬 코어와 Phase 2 Mattermost 연결이 구현되어 있습니다.
 
 ## 운영 경로
 
-확정된 서버 배치는 다음과 같습니다.
+아래는 공개 문서와 예제 설정에서 사용하는 예시 배치입니다. 실제 운영 경로는 환경에 맞게 변경합니다.
 
 ```text
 /srv/obsidian/vaults/example_vault                  # LiveSync Bridge 보관함 미러(읽기 전용)
@@ -101,7 +101,7 @@ python3 -m venv .venv
 
 Debian/Ubuntu 계열 WSL에서 `ensurepip is not available` 오류가 나면 먼저 배포판의 `python3-venv` 패키지가 필요합니다. Rocky Linux에서는 사용하는 Python 버전에 맞는 venv 패키지를 설치합니다.
 
-내부 운영 경로와 단계별 요구사항은 저장소 밖의 비공개 문서에서 별도로 관리합니다. 기존 Windows Toast 앱은 이 저장소 범위 밖의 읽기 전용 참고 프로젝트입니다.
+설계 배경과 단계별 요구사항은 [개발 인수인계](doc/HANDOFF.md), Phase 2 구현 요청은 [Phase 2 개발 프롬프트](doc/PHASE2_PROMPT.md)를 참고합니다. 문서의 경로와 이름은 모두 공개용 예시값입니다.
 
 ## 프로젝트 구조
 

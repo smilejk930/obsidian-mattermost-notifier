@@ -14,5 +14,3 @@ config.yaml
 *.sqlite3
 *.log
 .env
-HANDOFF.md
-PHASE2_PROMPT.md
