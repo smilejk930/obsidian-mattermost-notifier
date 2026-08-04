@@ -433,19 +433,55 @@ docker compose exec livesync-bridge \
 ```
 
 이는 빈 mirror를 먼저 baseline 처리한 뒤 Bridge가 내려받는 모든 기존 문서를 신규 문서로
-오인하는 일을 방지한다. 다음 순서로 한 번만 승인한다.
+오인하는 일을 방지한다. marker는 단순히 Bridge 컨테이너가 `healthy`가 된 직후 생성하지 않고,
+다음 항목을 모두 확인한 뒤 한 번만 승인한다.
 
-1. `docker compose ps`에서 Bridge가 healthy인지 확인한다.
-2. `docker compose logs -f livesync-bridge`와
-   `/data/obsidian-mattermost-notifier/vaults`의 파일을 확인한다.
-3. 모든 대상 vault의 초기 문서 반영이 완료되고 일정 시간 파일 수와 변경이 안정적인지 확인한다.
-4. 아래 명령으로 marker를 생성한다.
+먼저 컨테이너 상태와 Bridge heartbeat를 확인한다.
+
+```bash
+cd /data/obsidian-mattermost-notifier
+docker compose ps
+docker compose exec livesync-bridge \
+  sh -c 'cat /tmp/livesync-bridge-health.json'
+```
+
+Bridge는 `healthy`여야 하고, heartbeat의 최상위 `ok`와 모든 `peers[].ok`가 `true`여야 한다.
+CouchDB와 storage peer의 `detail`도 모두 `watching`인지 확인한다. `connecting`이나 `starting`이
+남아 있다면 marker를 생성하지 않고 동기화가 계속 진행되도록 기다린다.
+
+Bridge 로그에서 기존 문서 저장이 계속되는지 확인하고, 각 대상 vault의 파일 수를 30초 간격으로
+두 번 비교한다. 아래 `example_vault`는 실제 `baseDir`의 vault 디렉터리명으로 바꾸며, vault가
+여러 개면 각각 확인한다.
+
+```bash
+docker compose logs --tail=100 livesync-bridge
+sudo find \
+  /data/obsidian-mattermost-notifier/vaults/example_vault \
+  -type f | wc -l
+sleep 30
+sudo find \
+  /data/obsidian-mattermost-notifier/vaults/example_vault \
+  -type f | wc -l
+```
+
+두 파일 수가 다르거나 Bridge 로그에 기존 문서 저장이 계속 나타나면 아직 초기 동기화 중이다.
+파일 수가 안정되고 위 heartbeat 조건도 충족됐을 때만 marker를 생성한다.
 
 ```bash
 sudo install -o 10001 -g 10001 -m 0640 /dev/null \
   /data/obsidian-mattermost-notifier/state/notifier/bridge-initial-sync.complete
-docker compose logs -f obsidian-mattermost-notifier
 ```
+
+notifier는 marker를 감지하면 자동으로 시작하므로 일반적으로 재시작할 필요가 없다. 잠시 기다린
+뒤 notifier 상태와 로그를 확인한다.
+
+```bash
+sleep 10
+docker compose ps
+docker compose logs --tail=100 obsidian-mattermost-notifier
+```
+
+최종적으로 Bridge와 notifier가 모두 `healthy`가 되면 최초 기동 절차가 완료된 것이다.
 
 marker는 일반적인 재부팅, 컨테이너 재생성 및 이미지 갱신 때 유지한다. mirror 또는 notifier
 DB를 처음부터 재구축할 때는 notifier를 먼저 중지하고 marker 및 baseline 재생성 절차를
