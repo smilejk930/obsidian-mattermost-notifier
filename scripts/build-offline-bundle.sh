@@ -7,7 +7,7 @@ TARGET_PLATFORM="${TARGET_PLATFORM:-linux/amd64}"
 LIVESYNC_BRIDGE_REF="${LIVESYNC_BRIDGE_REF:-454f7611e88f681b3430234e03424be28ed3c7be}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 
-for required_command in docker git python3 sha256sum; do
+for required_command in docker git grep python3 sed sha256sum; do
     if ! command -v "${required_command}" >/dev/null 2>&1; then
         echo "필수 명령을 찾을 수 없습니다: ${required_command}" >&2
         exit 1
@@ -128,6 +128,21 @@ cp "${REPOSITORY_DIR}/README.md" "${BUNDLE_DIR}/README.md"
 
 docker image inspect "${NOTIFIER_IMAGE}" "${BRIDGE_IMAGE}" \
     >"${BUNDLE_DIR}/image-inspect.json"
+
+BUNDLE_TEXT_FILES=(
+    "${BUNDLE_DIR}/compose.example.yaml"
+    "${BUNDLE_DIR}/notifier-config.example.yaml"
+    "${BUNDLE_DIR}/livesync-bridge-config.example.json"
+    "${BUNDLE_DIR}/image-versions.env"
+    "${BUNDLE_DIR}/BUILD-METADATA.txt"
+    "${BUNDLE_DIR}/image-inspect.json"
+    "${BUNDLE_DIR}/README.md"
+)
+sed -i 's/\r$//' "${BUNDLE_TEXT_FILES[@]}"
+if LC_ALL=C grep -l $'\r' "${BUNDLE_TEXT_FILES[@]}" >/dev/null; then
+    echo "번들 텍스트 파일의 CR 줄바꿈 정규화에 실패했습니다." >&2
+    exit 1
+fi
 
 (
     cd "${BUNDLE_DIR}"

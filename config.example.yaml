@@ -1,3 +1,4 @@
+# Linux 운영 서버에 배포되는 예시이며 번들 생성 시 LF 줄바꿈으로 정규화된다.
 mattermost:
   url: "http://mattermost.internal.example"
   token: "CHANGE_ME"
