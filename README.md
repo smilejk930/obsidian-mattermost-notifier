@@ -6,14 +6,36 @@ Phase 1 로컬 코어와 Phase 2 Mattermost 연결이 구현되어 있습니다.
 
 ## 운영 경로
 
-아래는 공개 문서와 예제 설정에서 사용하는 예시 배치입니다. 실제 운영 경로는 환경에 맞게 변경합니다.
+운영 서버의 영속 파일은 모두 `/data/obsidian-mattermost-notifier` 아래에 둡니다. 이 디렉터리는
+호스트 운영 계정 `devsvr`가 관리하고, 컨테이너가 쓰는 상태 및 vault 디렉터리만 컨테이너의
+숫자 UID/GID에 맞춰 권한을 분리합니다.
 
 ```text
-/srv/obsidian/vaults/example_vault                  # Bridge 쓰기/notifier 읽기 전용 미러
-/etc/obsidian-mattermost-notifier/config.yaml       # 운영 설정
-/var/lib/obsidian-mattermost-notifier/notifier.db   # SQLite 상태
-/opt/obsidian-mattermost-notifier/                  # Compose 및 이미지 버전 설정
+/data/obsidian-mattermost-notifier/
+├── compose.yaml
+├── .env
+├── config/
+│   ├── notifier/config.yaml
+│   └── livesync-bridge/config.json
+├── state/
+│   ├── notifier/notifier.db
+│   └── livesync-bridge/
+└── vaults/
+    ├── example_vault/
+    └── another_vault/
 ```
+
+Compose bind mount에서 콜론 왼쪽은 위의 **운영 서버 경로**, 오른쪽은 이미지가 사용하는
+**컨테이너 내부 경로**입니다. `/etc`, `/var/lib`, `/srv`, `/app`처럼 보이는 오른쪽 경로는
+운영 서버에 별도로 만들지 않습니다.
+
+| 용도 | 운영 서버 경로 | 컨테이너 내부 경로 |
+| --- | --- | --- |
+| notifier 설정 | `/data/obsidian-mattermost-notifier/config/notifier/config.yaml` | `/etc/obsidian-mattermost-notifier/config.yaml` |
+| Bridge 설정 | `/data/obsidian-mattermost-notifier/config/livesync-bridge/config.json` | `/run/secrets/livesync-bridge-config.json` |
+| vault 상위 디렉터리 | `/data/obsidian-mattermost-notifier/vaults` | Bridge: `/app/data`, notifier: `/srv/obsidian/vaults` |
+| notifier 상태 | `/data/obsidian-mattermost-notifier/state/notifier` | `/var/lib/obsidian-mattermost-notifier` |
+| Bridge 상태 | `/data/obsidian-mattermost-notifier/state/livesync-bridge` | `/var/lib/livesync-bridge` |
 
 Obsidian URI의 `vault` 값은 서버 디렉터리명이 아니라 각 사용자 PC의 Obsidian에 등록된 보관함 이름이어야 합니다. 예시에서는 서버 경로와 클라이언트 보관함 이름을 `example_vault`로 통일합니다.
 
@@ -23,7 +45,7 @@ Obsidian URI의 `vault` 값은 서버 디렉터리명이 아니라 각 사용자
 오프라인 Docker 배포 절차를 사용한다. Python 3.11 이상이 필요하다.
 
 ```bash
-cd /opt/obsidian-mattermost-notifier
+cd /path/to/obsidian-mattermost-notifier
 python3 -m venv .venv
 .venv/bin/pip install .
 cp config.example.yaml config.yaml
@@ -33,7 +55,7 @@ cp config.example.yaml config.yaml
 
 ```bash
 .venv/bin/obsidian-mattermost-notifier \
-  --config /etc/obsidian-mattermost-notifier/config.yaml
+  --config ./config.yaml
 ```
 
 로그는 stdout/stderr로 출력합니다. `SIGTERM`과 `SIGINT`를 받으면 감시기, HTTP 세션,
@@ -45,7 +67,7 @@ SQLite 연결을 순서대로 닫습니다.
 
 ```bash
 .venv/bin/obsidian-mattermost-notifier \
-  --config /etc/obsidian-mattermost-notifier/config.yaml \
+  --config ./config.yaml \
   --check-mattermost
 ```
 
@@ -54,7 +76,7 @@ SQLite 연결을 순서대로 닫습니다.
 
 ```bash
 .venv/bin/obsidian-mattermost-notifier \
-  --config /etc/obsidian-mattermost-notifier/config.yaml \
+  --config ./config.yaml \
   --send-test example_vault
 ```
 
@@ -125,19 +147,23 @@ BUNDLE_DIR=/path/to/new-bundle \
 `offline-bundle-<version>-<git-sha>` 디렉터리 전체를 승인된 이동식 매체에 복사한다.
 
 이 절부터는 **Rocky Linux 운영 서버에서 실행한다.** 아래 `/path/to/...`는 이동식 매체에
-있는 실제 번들 경로로 바꾼다. 번들을 `/opt/obsidian-mattermost-notifier`에 복사한 직후,
+있는 실제 번들 경로로 바꾼다. 번들을 `/data/obsidian-mattermost-notifier`에 복사한 직후,
 어떤 파일도 수정하기 전에 checksum을 검증하고 이미지를 적재한다.
 
 ```bash
-sudo install -d -m 0755 /opt/obsidian-mattermost-notifier
-sudo cp -a \
+sudo install -d -o devsvr -g devsvr -m 0755 \
+  /data/obsidian-mattermost-notifier
+cp -a \
   /path/to/offline-bundle-<version>-<git-sha>/. \
-  /opt/obsidian-mattermost-notifier/
-sudo chown -R root:root /opt/obsidian-mattermost-notifier
-cd /opt/obsidian-mattermost-notifier
+  /data/obsidian-mattermost-notifier/
+cd /data/obsidian-mattermost-notifier
 sha256sum -c SHA256SUMS
 docker image load -i images.tar
 ```
+
+배포 번들과 Compose 파일은 `devsvr:devsvr` 소유로 유지한다. `root:root`로 재귀 변경하지
+않는다. 서비스 데이터 전체를 `devsvr` 소유로 만드는 대신, 아래 단계에서 컨테이너가 실제로
+쓰는 디렉터리만 해당 숫자 UID/GID로 설정한다.
 
 `SHA256SUMS` 검증이 하나라도 실패하면 이미지 적재와 배포를 중단하고 번들을 다시 반입한다.
 이 값은 반입 과정의 우발적인 파일 손상을 확인하기 위한 것이며, 번들의 출처나 악의적인
@@ -150,11 +176,16 @@ Compose 예시에 사용된 호스트 디렉터리를 만들고 컨테이너가 
 설정한다.
 
 ```bash
-sudo install -d -m 0750 /etc/obsidian-mattermost-notifier
-sudo install -d -m 0750 /etc/obsidian-livesync-bridge
-sudo install -d -o 1993 -g 1993 -m 0750 /var/lib/obsidian-livesync-bridge
-sudo install -d -o 10001 -g 10001 -m 0750 /var/lib/obsidian-mattermost-notifier
-sudo install -d -o 1993 -g 20001 -m 2770 /srv/obsidian/vaults
+sudo install -d -o devsvr -g 10001 -m 2750 \
+  /data/obsidian-mattermost-notifier/config/notifier
+sudo install -d -o devsvr -g 1993 -m 2750 \
+  /data/obsidian-mattermost-notifier/config/livesync-bridge
+sudo install -d -o 1993 -g 1993 -m 0750 \
+  /data/obsidian-mattermost-notifier/state/livesync-bridge
+sudo install -d -o 10001 -g 10001 -m 0750 \
+  /data/obsidian-mattermost-notifier/state/notifier
+sudo install -d -o 1993 -g 20001 -m 2770 \
+  /data/obsidian-mattermost-notifier/vaults
 ```
 
 - notifier 컨테이너 UID/GID는 `10001:10001`이다.
@@ -166,33 +197,34 @@ sudo install -d -o 1993 -g 20001 -m 2770 /srv/obsidian/vaults
   제어한다.
 - 호스트 배포 계정은 기본적으로 `20001` 그룹에 넣지 않는다. 초기 동기화 확인처럼 호스트에서
   vault를 직접 조회해야 할 때는 `sudo`를 사용하여 서버 미러의 우발적인 편집을 방지한다.
-- 운영 설정 파일은 해당 컨테이너 UID/GID만 읽도록 `0640` 이하로 제한한다.
+- 설정 디렉터리는 setgid를 적용해 편집 후 교체된 파일도 컨테이너용 그룹을 상속하게 한다.
+  운영 설정 파일은 `devsvr`와 해당 컨테이너 GID만 읽도록 `0640` 이하로 제한한다.
 - Rocky Linux SELinux를 비활성화하지 않는다. Compose의 `z`/`Z` mount label을 유지한다.
 
 ### 4. 운영 설정 작성과 서비스 기동
 
-번들 디렉터리에서 Compose 파일과 이미지 버전 파일을 만들고, 설정 예시를 `/etc` 아래의
-운영 설정으로 복사한다.
+번들 디렉터리에서 Compose 파일과 이미지 버전 파일을 만들고, 설정 예시를 프로젝트의
+`config` 아래 운영 설정으로 복사한다.
 
 ```bash
-cd /opt/obsidian-mattermost-notifier
-sudo cp compose.example.yaml compose.yaml
-sudo cp image-versions.env .env
-sudo cp notifier-config.example.yaml /etc/obsidian-mattermost-notifier/config.yaml
-sudo cp livesync-bridge-config.example.json /etc/obsidian-livesync-bridge/config.json
-sudo chown root:10001 /etc/obsidian-mattermost-notifier/config.yaml
-sudo chown root:1993 /etc/obsidian-livesync-bridge/config.json
-sudo chmod 0640 \
-  /etc/obsidian-mattermost-notifier/config.yaml \
-  /etc/obsidian-livesync-bridge/config.json
+cd /data/obsidian-mattermost-notifier
+cp compose.example.yaml compose.yaml
+cp image-versions.env .env
+cp notifier-config.example.yaml config/notifier/config.yaml
+cp livesync-bridge-config.example.json config/livesync-bridge/config.json
+sudo chown devsvr:10001 config/notifier/config.yaml
+sudo chown devsvr:1993 config/livesync-bridge/config.json
+chmod 0640 \
+  config/notifier/config.yaml \
+  config/livesync-bridge/config.json
 ```
 
 두 설정 파일을 편집한다. 실제 Bot token, CouchDB 암호, E2EE passphrase와 path
 obfuscation passphrase는 이미지, Git 저장소 및 `compose.yaml`에 넣지 않는다.
 
 ```bash
-sudoedit /etc/obsidian-mattermost-notifier/config.yaml
-sudoedit /etc/obsidian-livesync-bridge/config.json
+vi /data/obsidian-mattermost-notifier/config/notifier/config.yaml
+vi /data/obsidian-mattermost-notifier/config/livesync-bridge/config.json
 ```
 
 다음 값을 빠짐없이 운영값으로 바꾼다.
@@ -203,7 +235,8 @@ sudoedit /etc/obsidian-livesync-bridge/config.json
   LiveSync 보관함에 설정된 `passphrase`, `obfuscatePassphrase`
 - Bridge storage peer의 `baseDir`: Compose 컨테이너 내부 경로인
   `data/<vault-directory>/`; notifier의 `vault_path`는 이에 대응하는
-  `/srv/obsidian/vaults/<vault-directory>`
+  `/srv/obsidian/vaults/<vault-directory>`이다. 두 값 모두 컨테이너 내부 경로이며, 호스트에서는
+  `/data/obsidian-mattermost-notifier/vaults/<vault-directory>`에 저장된다.
 
 현재 운영 환경에서는 notifier의 `mattermost.url`에 `http://<Mattermost-IP>`, Bridge의
 CouchDB `url`에 `http://<CouchDB-IP>` 형식을 사용한다. CouchDB URL에는 Fauxton 관리
@@ -227,7 +260,7 @@ curl -v --connect-timeout 5 \
 Compose 구성을 검사하고 서비스를 기동한다.
 
 ```bash
-cd /opt/obsidian-mattermost-notifier
+cd /data/obsidian-mattermost-notifier
 docker compose config --quiet
 docker compose up -d --pull never --no-build
 ```
@@ -242,20 +275,21 @@ registry에서 자동으로 가져오지 않는다.
 최초 기동에서 notifier는 다음 marker가 생길 때까지 실제 애플리케이션을 시작하지 않는다.
 
 ```text
-/var/lib/obsidian-mattermost-notifier/bridge-initial-sync.complete
+/data/obsidian-mattermost-notifier/state/notifier/bridge-initial-sync.complete
 ```
 
 이는 빈 mirror를 먼저 baseline 처리한 뒤 Bridge가 내려받는 모든 기존 문서를 신규 문서로
 오인하는 일을 방지한다. 다음 순서로 한 번만 승인한다.
 
 1. `docker compose ps`에서 Bridge가 healthy인지 확인한다.
-2. `docker compose logs -f livesync-bridge`와 `/srv/obsidian/vaults`의 파일을 확인한다.
+2. `docker compose logs -f livesync-bridge`와
+   `/data/obsidian-mattermost-notifier/vaults`의 파일을 확인한다.
 3. 모든 대상 vault의 초기 문서 반영이 완료되고 일정 시간 파일 수와 변경이 안정적인지 확인한다.
 4. 아래 명령으로 marker를 생성한다.
 
 ```bash
 sudo install -o 10001 -g 10001 -m 0640 /dev/null \
-  /var/lib/obsidian-mattermost-notifier/bridge-initial-sync.complete
+  /data/obsidian-mattermost-notifier/state/notifier/bridge-initial-sync.complete
 docker compose logs -f obsidian-mattermost-notifier
 ```
 

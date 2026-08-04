@@ -9,6 +9,8 @@ mattermost:
   retry_jitter_ratio: 0.2
 
 obsidian_notifications:
+  # vault_path는 notifier 컨테이너 내부 경로이다. 호스트의
+  # /data/obsidian-mattermost-notifier/vaults가 /srv/obsidian/vaults로 마운트된다.
   - enabled: true
     vault_path: "/srv/obsidian/vaults/example_vault"
     vault_name: "example_vault"
@@ -30,6 +32,8 @@ obsidian_notifications:
     settle_seconds: 2
 
 state:
+  # 컨테이너 내부 경로이다. 호스트에서는
+  # /data/obsidian-mattermost-notifier/state/notifier/notifier.db에 저장된다.
   database_path: "/var/lib/obsidian-mattermost-notifier/notifier.db"
 
 logging:

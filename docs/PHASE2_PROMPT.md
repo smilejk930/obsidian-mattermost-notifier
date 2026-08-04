@@ -7,11 +7,11 @@ docs/HANDOFF.md 전체와 README.md, 현재 소스 및 테스트를 먼저 읽�
 
 운영 경로는 다음과 같다.
 
-- 서버 vault 경로: /srv/obsidian/vaults/example_vault
+- 서버 vault 경로: /data/obsidian-mattermost-notifier/vaults/example_vault
 - Obsidian vault 이름: example_vault
-- 애플리케이션 설치 루트: /opt/obsidian-mattermost-notifier
-- 운영 설정: /etc/obsidian-mattermost-notifier/config.yaml
-- SQLite 상태 DB: /var/lib/obsidian-mattermost-notifier/notifier.db
+- 애플리케이션 설치 루트: /data/obsidian-mattermost-notifier
+- 운영 설정: /data/obsidian-mattermost-notifier/config/notifier/config.yaml
+- SQLite 상태 DB: /data/obsidian-mattermost-notifier/state/notifier/notifier.db
 
 기존 mattermost-windows-toast 프로젝트는 수정하지 말고 읽기 전용 참고만 해. 실제 token, webhook URL, 비밀번호나 문서 본문은 저장소 또는 로그에 남기지 마.
 

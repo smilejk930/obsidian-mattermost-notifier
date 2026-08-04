@@ -26,8 +26,9 @@
 - 현재 운영 환경은 격리된 내부망의 Mattermost와 CouchDB에 HTTP로 연결한다.
 - Docker Engine과 Compose plugin은 승인된 RPM 묶음 또는 사내 저장소로 미리 설치한다.
 - GUI 없이 하나의 Docker Compose 프로젝트로 운영한다.
-- LiveSync Bridge가 물질화하는 예시 보관함 경로는 `/srv/obsidian/vaults/example_vault`이다.
-- Compose 및 오프라인 번들의 예시 설치 경로는 `/opt/obsidian-mattermost-notifier`이다.
+- LiveSync Bridge가 물질화하는 예시 호스트 보관함 경로는
+  `/data/obsidian-mattermost-notifier/vaults/example_vault`이다.
+- Compose, 설정, 상태 및 오프라인 번들은 `/data/obsidian-mattermost-notifier` 아래에 둔다.
 
 ### 기존 Windows 앱
 
@@ -52,7 +53,7 @@
 팀원 Obsidian
     -> Self-hosted LiveSync / CouchDB
     -> LiveSync Bridge
-    -> /srv/obsidian/vaults/example_vault
+    -> /data/obsidian-mattermost-notifier/vaults/example_vault
     -> obsidian-mattermost-notifier
     -> Mattermost REST API
 ```
@@ -98,19 +99,23 @@ LiveSync Bridge는 양방향 동기화가 가능하므로 서버 미러를 사�
 예시 운영 경로:
 
 ```text
-/srv/obsidian/vaults/example_vault                  # LiveSync Bridge 보관함 미러
-/opt/obsidian-mattermost-notifier/                  # notifier 설치 루트
-/etc/obsidian-mattermost-notifier/config.yaml       # 운영 설정(서비스 계정만 읽기)
-/var/lib/obsidian-mattermost-notifier/notifier.db   # SQLite 상태(보관함 밖)
+/data/obsidian-mattermost-notifier/
+├── config/notifier/config.yaml                     # notifier 운영 설정
+├── config/livesync-bridge/config.json               # Bridge 운영 설정
+├── state/notifier/notifier.db                       # SQLite 상태
+├── state/livesync-bridge/                           # Bridge 상태
+└── vaults/example_vault/                            # LiveSync Bridge 보관함 미러
 ```
 
 로그는 별도 파일보다 stdout/stderr와 journald를 기본으로 사용한다. notifier 서비스
-계정은 `/srv/obsidian/vaults/example_vault`를 읽을 수 있고 설정 및 상태 파일에 필요한
+계정은 `/data/obsidian-mattermost-notifier/vaults/example_vault`를 읽을 수 있고 설정 및 상태 파일에 필요한
 최소 권한만 갖는다. 보관함 미러에 대한 쓰기 권한은 주지 않는다.
 
 ## 5. 설정 형식
 
-다중 보관함은 `obsidian_notifications` 배열로 처리한다.
+다중 보관함은 `obsidian_notifications` 배열로 처리한다. 아래 `vault_path`와
+`database_path`는 notifier 컨테이너 내부 경로이며, 호스트 경로와의 대응은 README의
+운영 경로 표를 따른다.
 
 ```yaml
 mattermost:
@@ -333,7 +338,7 @@ notifier가 먼저 baseline을 만들면 뒤이어 내려오는 모든 기존 �
 변경이 안정적인지를 운영자가 확인하고 다음 marker를 만든다.
 
 ```text
-/var/lib/obsidian-mattermost-notifier/bridge-initial-sync.complete
+/data/obsidian-mattermost-notifier/state/notifier/bridge-initial-sync.complete
 ```
 
 marker는 일반 재부팅과 이미지 갱신에는 유지한다. mirror 또는 notifier DB를 처음부터
@@ -343,7 +348,8 @@ marker는 일반 재부팅과 이미지 갱신에는 유지한다. mirror 또는
 
 - 실제 PAT, Webhook URL, CouchDB 비밀번호, E2EE passphrase를 저장소에 커밋하지 않음
 - 예시 설정에는 `CHANGE_ME`만 사용
-- `/etc/obsidian-mattermost-notifier/config.yaml`은 서비스 계정만 읽도록 제한
+- `/data/obsidian-mattermost-notifier/config/notifier/config.yaml`은 `devsvr`와 notifier
+  컨테이너만 읽도록 제한
 - Mattermost `verify_ssl` 기본값은 `true`로 유지하되 현재 HTTP 연결에는 적용하지 않는다.
 - HTTP에서는 Mattermost token과 CouchDB 인증 정보가 전송 구간에서 암호화되지 않으므로
   방화벽으로 해당 포트 접근을 필요한 서버 사이에만 제한한다.
@@ -379,7 +385,8 @@ Bridge 설정 설명: <https://github.com/vrtmrz/livesync-bridge#configuration>
 
 모든 Obsidian 클라이언트와 Bridge가 해당 보관함에 대해 동일한 설정과 passphrase를
 사용해야 한다. Bridge에 passphrase를 제공하면 CouchDB 및 DB 백업의 노출은 줄일 수
-있지만, Bridge 프로세스와 물질화된 `/srv/obsidian/vaults/...` 파일은 평문을 읽을 수
+있지만, Bridge 프로세스와 물질화된
+`/data/obsidian-mattermost-notifier/vaults/...` 파일은 평문을 읽을 수
 있다. 따라서 서버 침해까지 막아 주는 기능은 아니며 미러 디렉터리 권한과 서버 보안은
 계속 필요하다.
 
@@ -392,15 +399,16 @@ LiveSync가 요구하는 DB rebuild 또는 경로 변환 절차를 별도 점검
 ### Bridge 비밀 배포 방식
 
 - 저장소의 `compose.example.yaml`과 예시 설정에는 실제 비밀값을 넣지 않는다.
-- 운영 서버의 `/etc/obsidian-livesync-bridge/config.json`에 CouchDB 계정,
+- 운영 서버의 `/data/obsidian-mattermost-notifier/config/livesync-bridge/config.json`에 CouchDB 계정,
   `passphrase`, `obfuscatePassphrase`를 저장하고 컨테이너의
   `/run/secrets/livesync-bridge-config.json`에 read-only bind mount하고 `LSB_CONFIG`로
   해당 경로를 지정한다.
-- 호스트 파일은 root 및 Bridge 운영 그룹만 읽을 수 있게 소유권을 지정하고 `0640` 이하로
-  제한한다. 컨테이너의 실행 UID/GID가 읽을 수 있는지는 배포 시 확인한다.
+- 호스트 파일은 `devsvr` 및 Bridge 컨테이너 GID만 읽을 수 있게 소유권을 지정하고 `0640`
+  이하로 제한한다. 컨테이너의 실행 UID/GID가 읽을 수 있는지는 배포 시 확인한다.
 - compose 출력, journald, 셸 명령행에 비밀값을 직접 넣지 않는다. 비밀 파일과 백업의 접근
   권한 및 교체 절차도 함께 관리한다.
-- Mattermost Bot token은 notifier의 `/etc/obsidian-mattermost-notifier/config.yaml`에
+- Mattermost Bot token은 운영 서버의
+  `/data/obsidian-mattermost-notifier/config/notifier/config.yaml`에
   별도로 두어 Bridge가 읽지 못하게 한다.
 
 ## 13. 추천 프로젝트 구조
@@ -539,7 +547,9 @@ docs/HANDOFF.md 전체를 읽고 Phase 1을 구현해줘.
 - 삭제 이벤트가 관측된 뒤 동일 상대 경로가 재생성되면 새 generation으로 기록하고 다시 알린다.
 - 메시지 시각은 timezone 정보가 있는 이벤트 최초 감지 시각을 사용하며 `감지`로 표시한다.
 - `channel_id`가 있으면 `team_name + channel_name` 조회보다 우선한다.
-- 예시 기본 설정 경로는 `/etc/obsidian-mattermost-notifier/config.yaml`이다.
+- 컨테이너 내부 기본 설정 경로는 `/etc/obsidian-mattermost-notifier/config.yaml`이며,
+  호스트의 `/data/obsidian-mattermost-notifier/config/notifier/config.yaml`을 여기에
+  read-only로 마운트한다.
 
 ### Phase 2에서 확정한 정책
 
