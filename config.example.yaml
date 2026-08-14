@@ -21,6 +21,12 @@ obsidian_notifications:
       - ".obsidian"
       - ".trash"
     settle_seconds: 2
+    # 마지막 생성/수정/이름 변경 이후 이 시간 동안 변화가 없을 때 알림을 보낸다.
+    notification_quiet_seconds: 30
+    # 확장자를 제외한 파일명과 대조한다. 일치하는 동안에는 알림을 보류한다.
+    draft_name_patterns:
+      - '무제(?: \d+)?'
+      - 'Untitled(?: \d+)?'
 
   - enabled: false
     vault_path: "/srv/obsidian/vaults/another_vault"
@@ -31,6 +37,10 @@ obsidian_notifications:
       - ".obsidian"
       - ".trash"
     settle_seconds: 2
+    notification_quiet_seconds: 30
+    draft_name_patterns:
+      - '무제(?: \d+)?'
+      - 'Untitled(?: \d+)?'
 
 state:
   # 컨테이너 내부 경로이다. 호스트에서는

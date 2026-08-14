@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -12,7 +12,12 @@ from .delivery import DeliveryTarget, DeliveryWorker
 from .mattermost import MattermostClient, MattermostRequestError
 from .retry import RetryPolicy
 from .state import FileSnapshot, StateStore
-from .watcher import VaultWatcher, eligible_relative_path, scan_markdown_files
+from .watcher import (
+    VaultWatcher,
+    eligible_relative_path,
+    is_draft_relative_path,
+    scan_markdown_files,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -156,10 +161,13 @@ class NotifierService:
             try:
                 watcher = self._new_watcher(runtime.config)
                 watcher.start()
+                observed_at = datetime.now(UTC)
                 self._state.reconcile(
                     vault_name,
-                    scan_markdown_files(runtime.config),
-                    observed_at=datetime.now(UTC),
+                    self._scannable_files(runtime.config),
+                    observed_at=observed_at,
+                    notify_after=observed_at
+                    + timedelta(seconds=runtime.config.notification_quiet_seconds),
                 )
                 with self._runtime_lock:
                     self._runtimes[vault_name] = _VaultRuntime(
@@ -184,14 +192,17 @@ class NotifierService:
         channel_id = self._publisher.channel_id_for(vault)
         watcher = self._new_watcher(vault)
         initialized = self._state.is_initialized(vault.vault_name)
+        observed_at = datetime.now(UTC)
+        notify_after = observed_at + timedelta(seconds=vault.notification_quiet_seconds)
 
         if initialized:
             watcher.start()
             try:
                 self._state.reconcile(
                     vault.vault_name,
-                    scan_markdown_files(vault),
-                    observed_at=datetime.now(UTC),
+                    self._scannable_files(vault),
+                    observed_at=observed_at,
+                    notify_after=notify_after,
                 )
             except Exception:
                 watcher.stop()
@@ -199,8 +210,9 @@ class NotifierService:
         else:
             self._state.reconcile(
                 vault.vault_name,
-                scan_markdown_files(vault),
-                observed_at=datetime.now(UTC),
+                self._scannable_files(vault),
+                observed_at=observed_at,
+                notify_after=notify_after,
             )
             watcher.start()
 
@@ -215,6 +227,7 @@ class NotifierService:
         return VaultWatcher(
             vault,
             lambda path: self._on_stable_file(vault, path),
+            lambda source, destination: self._on_moved(vault, source, destination),
             lambda relative: self._state.mark_missing(vault.vault_name, relative),
             logger=self._logger,
         )
@@ -222,6 +235,8 @@ class NotifierService:
     def _on_stable_file(self, vault: VaultConfig, path: Path) -> None:
         relative_path = eligible_relative_path(vault, path)
         if relative_path is None:
+            return
+        if is_draft_relative_path(vault, relative_path):
             return
         try:
             stat = path.stat()
@@ -234,6 +249,33 @@ class NotifierService:
         )
         if record.status == "pending" and record.present:
             self._delivery_worker.wake()
+
+    def _on_moved(
+        self, vault: VaultConfig, source_relative: str, destination: Path
+    ) -> None:
+        destination_relative = eligible_relative_path(vault, destination)
+        if destination_relative is None:
+            self._state.mark_missing(vault.vault_name, source_relative)
+            return
+        try:
+            stat = destination.stat()
+        except OSError:
+            return
+        record = self._state.move_path(
+            vault.vault_name,
+            source_relative,
+            FileSnapshot(destination_relative, stat.st_size, stat.st_mtime_ns),
+        )
+        if record is not None and record.status == "pending" and record.present:
+            self._delivery_worker.wake()
+
+    @staticmethod
+    def _scannable_files(vault: VaultConfig) -> list[FileSnapshot]:
+        return [
+            snapshot
+            for snapshot in scan_markdown_files(vault)
+            if not is_draft_relative_path(vault, snapshot.relative_path)
+        ]
 
     def _delivery_targets(self) -> dict[str, DeliveryTarget]:
         with self._runtime_lock:

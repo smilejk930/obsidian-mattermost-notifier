@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -92,6 +93,11 @@ class StableFileDispatcher:
             )
             self._condition.notify()
 
+    def discard(self, path: Path) -> None:
+        with self._condition:
+            self._scheduled.pop(path, None)
+            self._condition.notify()
+
     def stop(self) -> None:
         with self._condition:
             self._stopping = True
@@ -140,10 +146,12 @@ class VaultEventHandler(FileSystemEventHandler):
         self,
         vault: VaultConfig,
         on_created: Callable[[Path], None],
+        on_moved: Callable[[str, Path], None],
         on_missing: Callable[[str], None],
     ) -> None:
         self._vault = vault
         self._on_created = on_created
+        self._on_moved = on_moved
         self._on_missing = on_missing
 
     def on_created(self, event: FileSystemEvent) -> None:
@@ -157,10 +165,20 @@ class VaultEventHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         source_relative = eligible_relative_path(self._vault, event.src_path)
-        if source_relative is not None:
+        destination_relative = eligible_relative_path(self._vault, event.dest_path)
+        if source_relative is not None and destination_relative is not None:
+            self._on_moved(source_relative, Path(event.dest_path))
+        elif source_relative is not None:
             self._on_missing(source_relative)
-        if eligible_relative_path(self._vault, event.dest_path) is not None:
+        if destination_relative is not None:
             self._on_created(Path(event.dest_path))
+
+    def on_modified(self, event: FileSystemEvent) -> None:
+        if (
+            not event.is_directory
+            and eligible_relative_path(self._vault, event.src_path) is not None
+        ):
+            self._on_created(Path(event.src_path))
 
     def on_deleted(self, event: FileSystemEvent) -> None:
         if event.is_directory:
@@ -175,6 +193,7 @@ class VaultWatcher:
         self,
         vault: VaultConfig,
         on_stable_file: Callable[[Path], None],
+        on_moved: Callable[[str, Path], None],
         on_missing: Callable[[str], None],
         *,
         logger: logging.Logger | None = None,
@@ -182,9 +201,22 @@ class VaultWatcher:
         self.vault = vault
         self._logger = logger or LOGGER
         self._dispatcher = StableFileDispatcher(
-            vault.settle_seconds, on_stable_file, logger=self._logger
+            max(vault.settle_seconds, vault.notification_quiet_seconds),
+            on_stable_file,
+            logger=self._logger,
         )
-        self._handler = VaultEventHandler(vault, self._dispatcher.submit, on_missing)
+
+        def handle_move(source_relative: str, destination: Path) -> None:
+            source = vault.vault_path.joinpath(*PurePosixPath(source_relative).parts)
+            self._dispatcher.discard(source)
+            on_moved(source_relative, destination)
+
+        self._handler = VaultEventHandler(
+            vault,
+            self._dispatcher.submit,
+            handle_move,
+            on_missing,
+        )
         self._observer = Observer()
         self._started = False
 
@@ -223,3 +255,11 @@ def _file_signature(path: Path) -> tuple[int, int] | None:
     if not path.is_file():
         return None
     return stat.st_size, stat.st_mtime_ns
+
+
+def is_draft_relative_path(vault: VaultConfig, relative_path: str) -> bool:
+    stem = PurePosixPath(relative_path).stem
+    return any(
+        re.fullmatch(pattern, stem, flags=re.IGNORECASE) is not None
+        for pattern in vault.draft_name_patterns
+    )

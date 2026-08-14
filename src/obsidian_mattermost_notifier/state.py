@@ -88,9 +88,11 @@ class StateStore:
         files: Iterable[FileSnapshot],
         *,
         observed_at: datetime | None = None,
+        notify_after: datetime | None = None,
     ) -> list[DocumentRecord]:
         """Baseline a new vault or return pending documents for an initialized vault."""
         now = _as_utc(observed_at or datetime.now(UTC))
+        pending_at = _as_utc(notify_after) if notify_after is not None else now
         snapshots = {
             normalize_relative_path(snapshot.relative_path): FileSnapshot(
                 normalize_relative_path(snapshot.relative_path),
@@ -150,7 +152,13 @@ class StateStore:
             for relative_path, snapshot in snapshots.items():
                 row = existing_rows.get(relative_path)
                 if row is None:
-                    self._insert_pending(vault_name, snapshot, now, generation=1)
+                    self._insert_pending(
+                        vault_name,
+                        snapshot,
+                        now,
+                        generation=1,
+                        notify_at=pending_at,
+                    )
                 elif not bool(row["present"]):
                     self._connection.execute(
                         """
@@ -165,7 +173,7 @@ class StateStore:
                             snapshot.size,
                             snapshot.mtime_ns,
                             _serialize_time(now),
-                            _serialize_time(now),
+                            _serialize_time(pending_at),
                             vault_name,
                             relative_path,
                         ),
@@ -247,6 +255,46 @@ class StateStore:
                 (vault_name, normalized),
             )
 
+    def move_path(
+        self,
+        vault_name: str,
+        source_relative_path: str,
+        destination: FileSnapshot,
+    ) -> DocumentRecord | None:
+        source = normalize_relative_path(source_relative_path)
+        destination = FileSnapshot(
+            normalize_relative_path(destination.relative_path),
+            destination.size,
+            destination.mtime_ns,
+        )
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT 1 FROM documents WHERE vault_name = ? AND relative_path = ?",
+                (vault_name, source),
+            ).fetchone()
+            if row is None:
+                return None
+            if source != destination.relative_path:
+                self._connection.execute(
+                    "DELETE FROM documents WHERE vault_name = ? AND relative_path = ?",
+                    (vault_name, destination.relative_path),
+                )
+            self._connection.execute(
+                """
+                UPDATE documents
+                SET relative_path = ?, size = ?, mtime_ns = ?, present = 1
+                WHERE vault_name = ? AND relative_path = ?
+                """,
+                (
+                    destination.relative_path,
+                    destination.size,
+                    destination.mtime_ns,
+                    vault_name,
+                    source,
+                ),
+            )
+            return self._get_locked(vault_name, destination.relative_path)
+
     def mark_sent(
         self,
         vault_name: str,
@@ -323,6 +371,7 @@ class StateStore:
                 """
                 UPDATE documents SET next_retry_at = ?
                 WHERE status = 'pending' AND present = 1
+                    AND (attempt_count > 0 OR next_retry_at IS NULL)
                 """,
                 (_serialize_time(now),),
             )
@@ -419,7 +468,13 @@ class StateStore:
         self._connection.execute("PRAGMA user_version = 2")
 
     def _insert_pending(
-        self, vault_name: str, snapshot: FileSnapshot, now: datetime, *, generation: int
+        self,
+        vault_name: str,
+        snapshot: FileSnapshot,
+        now: datetime,
+        *,
+        generation: int,
+        notify_at: datetime | None = None,
     ) -> None:
         self._connection.execute(
             """
@@ -435,7 +490,7 @@ class StateStore:
                 snapshot.size,
                 snapshot.mtime_ns,
                 _serialize_time(now),
-                _serialize_time(now),
+                _serialize_time(notify_at or now),
             ),
         )
 

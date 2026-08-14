@@ -138,6 +138,10 @@ obsidian_notifications:
       - ".obsidian"
       - ".trash"
     settle_seconds: 2
+    notification_quiet_seconds: 30
+    draft_name_patterns:
+      - '무제(?: \d+)?'
+      - 'Untitled(?: \d+)?'
 
   - enabled: false
     vault_path: "/srv/obsidian/vaults/another_vault"
@@ -148,6 +152,10 @@ obsidian_notifications:
       - ".obsidian"
       - ".trash"
     settle_seconds: 2
+    notification_quiet_seconds: 30
+    draft_name_patterns:
+      - '무제(?: \d+)?'
+      - 'Untitled(?: \d+)?'
 
 state:
   database_path: "/var/lib/obsidian-mattermost-notifier/notifier.db"
@@ -180,6 +188,12 @@ Mattermost API: <https://developers.mattermost.com/api-documentation/>
 - 기본값은 2초이며 느린 환경에서는 3~5초로 조정한다.
 
 이 값은 문서 생성 시각을 바꾸지 않고 알림 전송만 지연한다.
+
+`notification_quiet_seconds`는 사용자 작성 흐름을 위한 별도 유예시간이며 기본값은 30초다.
+생성, 수정, 이름 변경이 관측될 때마다 다시 시작한다. `draft_name_patterns`와 일치하는
+확장자 제외 파일명(`무제`, `무제 1`, `Untitled` 등)은 최종 이름으로 바뀔 때까지 알림을
+보류한다. rename은 동일 문서의 경로 변경으로 상태를 승계하며 이미 게시한 문서를 다시
+알리지 않는다.
 
 ## 7. 파일 감시 요구사항
 

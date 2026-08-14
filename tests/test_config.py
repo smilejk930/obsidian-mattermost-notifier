@@ -54,6 +54,32 @@ def test_parse_multiple_vaults_and_channel_id_priority(tmp_path: Path) -> None:
     assert len(config.enabled_vaults) == 2
     assert config.enabled_vaults[1].channel_id == "channel-123"
     assert config.enabled_vaults[1].team_name is None
+    assert config.enabled_vaults[1].notification_quiet_seconds == 30
+    assert config.enabled_vaults[1].draft_name_patterns == (
+        r"무제(?: \d+)?",
+        r"Untitled(?: \d+)?",
+    )
+
+
+def test_notification_quiet_and_draft_patterns_are_validated(tmp_path: Path) -> None:
+    raw = config_data(tmp_path)
+    vault = raw["obsidian_notifications"][0]
+    vault["notification_quiet_seconds"] = 45
+    vault["draft_name_patterns"] = [r"Draft(?: \d+)?"]
+
+    parsed = parse_config(raw).enabled_vaults[0]
+
+    assert parsed.notification_quiet_seconds == 45
+    assert parsed.draft_name_patterns == (r"Draft(?: \d+)?",)
+
+    vault["draft_name_patterns"] = ["["]
+    with pytest.raises(ConfigError, match="정규식"):
+        parse_config(raw)
+
+    vault["draft_name_patterns"] = []
+    vault["notification_quiet_seconds"] = -1
+    with pytest.raises(ConfigError, match="notification_quiet_seconds"):
+        parse_config(raw)
 
 
 @pytest.mark.parametrize("field", ["vault_name", "vault_path"])

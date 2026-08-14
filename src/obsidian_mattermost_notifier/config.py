@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -36,6 +37,11 @@ class VaultConfig:
     channel_id: str | None
     ignore_folders: tuple[str, ...]
     settle_seconds: float
+    notification_quiet_seconds: float = 30.0
+    draft_name_patterns: tuple[str, ...] = (
+        r"무제(?: \d+)?",
+        r"Untitled(?: \d+)?",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +244,37 @@ def _parse_vault(index: int, item: object, *, validate_paths: bool) -> VaultConf
     if not math.isfinite(settle_seconds) or settle_seconds < 0:
         raise ConfigError(f"{prefix}.settle_seconds는 0 이상이어야 합니다.")
 
+    quiet_raw = raw.get("notification_quiet_seconds", 30)
+    if isinstance(quiet_raw, bool) or not isinstance(quiet_raw, (int, float)):
+        raise ConfigError(
+            f"{prefix}.notification_quiet_seconds는 0 이상의 숫자여야 합니다."
+        )
+    notification_quiet_seconds = float(quiet_raw)
+    if not math.isfinite(notification_quiet_seconds) or notification_quiet_seconds < 0:
+        raise ConfigError(f"{prefix}.notification_quiet_seconds는 0 이상이어야 합니다.")
+
+    patterns_raw = raw.get(
+        "draft_name_patterns", [r"무제(?: \d+)?", r"Untitled(?: \d+)?"]
+    )
+    if not isinstance(patterns_raw, list):
+        raise ConfigError(
+            f"{prefix}.draft_name_patterns는 정규식 문자열 배열이어야 합니다."
+        )
+    draft_name_patterns: list[str] = []
+    for pattern_index, value in enumerate(patterns_raw):
+        pattern = _nonempty_string(
+            value, f"{prefix}.draft_name_patterns[{pattern_index}]"
+        )
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ConfigError(
+                f"{prefix}.draft_name_patterns[{pattern_index}] 정규식이 "
+                f"올바르지 않습니다: {exc}"
+            ) from exc
+        if pattern not in draft_name_patterns:
+            draft_name_patterns.append(pattern)
+
     return VaultConfig(
         enabled=enabled,
         vault_path=vault_path,
@@ -247,6 +284,8 @@ def _parse_vault(index: int, item: object, *, validate_paths: bool) -> VaultConf
         channel_id=channel_id,
         ignore_folders=tuple(ignores),
         settle_seconds=settle_seconds,
+        notification_quiet_seconds=notification_quiet_seconds,
+        draft_name_patterns=tuple(draft_name_patterns),
     )
 
 

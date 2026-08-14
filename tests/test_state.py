@@ -83,6 +83,49 @@ def test_delete_then_same_path_recreation_is_a_new_generation(tmp_path: Path) ->
         store.close()
 
 
+def test_move_preserves_sent_document_identity_without_new_pending(
+    tmp_path: Path,
+) -> None:
+    store = StateStore(tmp_path / "notifier.db")
+    try:
+        store.reconcile("vault", [], observed_at=NOW)
+        store.observe_new("vault", FileSnapshot("before.md", 10, 100), observed_at=NOW)
+        store.mark_sent("vault", "before.md", "post-1", generation=1)
+
+        moved = store.move_path("vault", "before.md", FileSnapshot("after.md", 20, 200))
+
+        assert moved is not None
+        assert moved.relative_path == "after.md"
+        assert moved.status == "sent"
+        assert moved.post_id == "post-1"
+        assert store.get("vault", "before.md") is None
+        assert store.pending("vault") == []
+    finally:
+        store.close()
+
+
+def test_reconcile_quiet_deadline_survives_resume_pending(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "notifier.db")
+    try:
+        store.reconcile("vault", [], observed_at=NOW)
+        ready_at = NOW + timedelta(seconds=30)
+        store.reconcile(
+            "vault",
+            [FileSnapshot("while-stopped.md", 10, 100)],
+            observed_at=NOW,
+            notify_after=ready_at,
+        )
+
+        store.resume_pending(resumed_at=NOW + timedelta(seconds=1))
+
+        assert store.due_pending(["vault"], now=ready_at - timedelta(seconds=1)) == []
+        assert store.due_pending(["vault"], now=ready_at)[0].relative_path == (
+            "while-stopped.md"
+        )
+    finally:
+        store.close()
+
+
 def test_failed_delivery_remains_pending(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "notifier.db")
     try:

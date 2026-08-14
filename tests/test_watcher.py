@@ -4,7 +4,12 @@ import threading
 import time
 from pathlib import Path
 
-from watchdog.events import FileCreatedEvent, FileDeletedEvent, FileMovedEvent
+from watchdog.events import (
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+)
 
 from obsidian_mattermost_notifier.config import VaultConfig
 from obsidian_mattermost_notifier.watcher import (
@@ -26,6 +31,7 @@ def vault_config(path: Path, *, settle_seconds: float = 0.02) -> VaultConfig:
         channel_id=None,
         ignore_folders=(".obsidian", ".trash", "private/archive"),
         settle_seconds=settle_seconds,
+        notification_quiet_seconds=settle_seconds,
     )
 
 
@@ -47,20 +53,25 @@ def test_scan_only_includes_markdown_outside_ignored_folders(tmp_path: Path) -> 
     )
 
 
-def test_handler_accepts_create_and_move_but_not_modify() -> None:
+def test_handler_accepts_create_move_and_modify_activity() -> None:
     root = Path("/tmp/test-vault").resolve()
     vault = vault_config(root)
     created: list[Path] = []
     missing: list[str] = []
-    handler = VaultEventHandler(vault, created.append, missing.append)
+    moved: list[tuple[str, Path]] = []
+    handler = VaultEventHandler(
+        vault, created.append, lambda *args: moved.append(args), missing.append
+    )
 
     handler.dispatch(FileCreatedEvent(str(root / "created.md")))
     handler.dispatch(FileCreatedEvent(str(root / ".obsidian" / "ignored.md")))
+    handler.dispatch(FileModifiedEvent(str(root / "created.md")))
     handler.dispatch(FileMovedEvent(str(root / "old.md"), str(root / "renamed.md")))
     handler.dispatch(FileDeletedEvent(str(root / "renamed.md")))
 
-    assert created == [root / "created.md", root / "renamed.md"]
-    assert missing == ["old.md", "renamed.md"]
+    assert created == [root / "created.md", root / "created.md", root / "renamed.md"]
+    assert moved == [("old.md", root / "renamed.md")]
+    assert missing == ["renamed.md"]
 
 
 def test_dispatcher_waits_until_size_and_mtime_are_stable(tmp_path: Path) -> None:
@@ -84,6 +95,7 @@ def test_vault_watcher_observes_real_file_creation(tmp_path: Path) -> None:
     watcher = VaultWatcher(
         vault_config(tmp_path),
         lambda _path: delivered.set(),
+        lambda _source, _destination: None,
         lambda _relative: None,
     )
     watcher.start()
@@ -94,7 +106,7 @@ def test_vault_watcher_observes_real_file_creation(tmp_path: Path) -> None:
         watcher.stop()
 
 
-def test_vault_watcher_does_not_treat_plain_modification_as_creation(
+def test_vault_watcher_uses_modification_as_quiet_period_activity(
     tmp_path: Path,
 ) -> None:
     document = tmp_path / "existing.md"
@@ -103,11 +115,12 @@ def test_vault_watcher_does_not_treat_plain_modification_as_creation(
     watcher = VaultWatcher(
         vault_config(tmp_path),
         lambda _path: delivered.set(),
+        lambda _source, _destination: None,
         lambda _relative: None,
     )
     watcher.start()
     try:
         document.write_text("modified", encoding="utf-8")
-        assert not delivered.wait(timeout=0.2)
+        assert delivered.wait(timeout=1)
     finally:
         watcher.stop()

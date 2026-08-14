@@ -336,6 +336,10 @@ obsidian_notifications:
       - "images"
       - "templates"
     settle_seconds: 2
+    notification_quiet_seconds: 30
+    draft_name_patterns:
+      - '무제(?: \d+)?'
+      - 'Untitled(?: \d+)?'
 
 state:
   database_path: "/var/lib/obsidian-mattermost-notifier/notifier.db"
@@ -362,6 +366,8 @@ logging:
 | `channel_id` | 선택 항목이다. 지정하면 `team_name`과 `channel_name` 조회를 생략하고 이 값을 우선한다. |
 | `ignore_folders` | vault 루트 기준 상대 폴더 경로다. 예를 들어 `images`는 루트의 `images/`를, `archive/private`는 해당 중첩 폴더를 제외한다. |
 | `settle_seconds` | 파일 크기와 수정 시각이 이 시간 동안 안정된 뒤 새 문서로 처리한다. |
+| `notification_quiet_seconds` | 생성·수정·이름 변경 후 이 시간 동안 변화가 없을 때 알림 후보를 확정한다. 기본값은 30초다. |
+| `draft_name_patterns` | 확장자를 제외한 파일명이 정규식과 일치하는 동안 알림을 보류한다. 기본값은 `무제`, `무제 N`, `Untitled`, `Untitled N`이다. |
 | `state.database_path` | notifier 컨테이너 내부 SQLite 경로다. Compose가 호스트 `state/notifier` 디렉터리를 이 위치에 연결한다. |
 | `logging.level` | 로그 수준이다. 운영 기본값은 `INFO`다. |
 
@@ -549,7 +555,16 @@ registry 접근을 금지하는 방식은 Docker의 `pull_policy: never` 동작�
 
 최초 실행 시 기존 Markdown 파일을 SQLite에 baseline으로 기록하며 알림을 보내지 않습니다. 이후 재시작할 때 파일 목록과 DB를 비교하여 서비스가 정지한 동안 생긴 문서를 pending으로 복구합니다.
 
-생성 및 move/rename 이벤트만 새 문서 후보가 됩니다. 일반 수정 이벤트는 알림을 만들지 않습니다. 파일 크기와 수정 시각이 `settle_seconds` 동안 유지된 뒤 처리하며, 중복 이벤트는 `vault_name + 상대 경로`로 제거합니다.
+생성 이벤트가 새 문서 후보를 만들며, 수정 및 move/rename 이벤트는 후보의
+`notification_quiet_seconds` 대기 시간을 다시 시작합니다. 기존 문서의 일반 수정은 새 알림을
+만들지 않습니다. 파일 크기와 수정 시각은 최소 `settle_seconds` 동안 안정되어야 합니다.
+
+확장자를 제외한 파일명이 `draft_name_patterns` 중 하나와 일치하면 알림을 보내지 않습니다.
+기본 설정에서는 `무제.md`와 `무제 1.md`가 이에 해당합니다. 최종 이름으로 변경한 뒤 마지막
+활동으로부터 기본 30초 동안 변화가 없으면 최종 제목과 경로로 한 번만 게시합니다. rename은
+삭제 후 신규 생성이 아니라 기존 문서의 경로 변경으로 상태를 승계하므로, 이미 알린 문서를
+rename해도 다시 게시하지 않습니다. 서비스가 중단된 동안 발견된 신규 문서에도 같은 유예시간을
+적용하며 임시 이름 문서는 보완 전송에서 제외합니다.
 
 삭제가 관측된 뒤 같은 상대 경로에 Markdown 파일이 다시 생기면 새 generation으로 간주해 다시 알립니다. 전송에 실패한 문서는 시도 횟수와 다음 재시도 시각을 SQLite에 보존하며 서비스 재시작 없이 전용 worker가 다시 시도합니다. 재시도 불가능한 4xx는 pending 상태로 보존하되 자동 재시도를 멈추고, 설정 수정 후 서비스가 재시작되면 다시 확인합니다.
 

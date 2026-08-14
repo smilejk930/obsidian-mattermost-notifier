@@ -59,10 +59,16 @@ class FakeWatcher:
     instances: ClassVar[list[FakeWatcher]] = []
 
     def __init__(
-        self, vault: object, on_file: object, on_missing: object, **_kwargs: object
+        self,
+        vault: object,
+        on_file: object,
+        on_moved: object,
+        on_missing: object,
+        **_kwargs: object,
     ) -> None:
         self.vault = vault
         self.on_file = on_file
+        self.on_moved = on_moved
         self.on_missing = on_missing
         self.started = False
         self.__class__.instances.append(self)
@@ -94,6 +100,7 @@ def app_config(tmp_path: Path):
                     "vault_name": "vault",
                     "channel_id": "channel-1",
                     "settle_seconds": 0,
+                    "notification_quiet_seconds": 0,
                 }
             ],
             "state": {"database_path": str(tmp_path / "state" / "notifier.db")},
@@ -108,6 +115,170 @@ def wait_until(predicate, *, timeout: float = 2) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("condition was not met before timeout")
+
+
+def test_untitled_draft_is_not_posted_until_renamed_and_quiet(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = parse_config(
+        {
+            "mattermost": {
+                "url": "https://mattermost.example.com",
+                "token": "test-token",
+            },
+            "obsidian_notifications": [
+                {
+                    "vault_path": str(vault),
+                    "vault_name": "vault",
+                    "channel_id": "channel-1",
+                    "settle_seconds": 0.01,
+                    "notification_quiet_seconds": 0.05,
+                    "draft_name_patterns": [r"무제(?: \d+)?", r"Untitled(?: \d+)?"],
+                }
+            ],
+            "state": {"database_path": str(tmp_path / "state" / "notifier.db")},
+        }
+    )
+    publisher = FakePublisher()
+    service = NotifierService(config, publisher=publisher)
+    service.start()
+    try:
+        draft = vault / "무제.md"
+        draft.write_text("", encoding="utf-8")
+        time.sleep(0.1)
+        assert publisher.posts == []
+
+        draft.write_text("# 회의록", encoding="utf-8")
+        completed = vault / "회의록.md"
+        draft.rename(completed)
+
+        wait_until(lambda: len(publisher.posts) == 1)
+        _, message = publisher.posts[0]
+        assert "회의록.md" in message
+        assert "무제.md" not in message
+        time.sleep(0.1)
+        assert len(publisher.posts) == 1
+    finally:
+        service.stop()
+
+
+def test_quiet_period_restarts_on_document_modification(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = parse_config(
+        {
+            "mattermost": {
+                "url": "https://mattermost.example.com",
+                "token": "test-token",
+            },
+            "obsidian_notifications": [
+                {
+                    "vault_path": str(vault),
+                    "vault_name": "vault",
+                    "channel_id": "channel-1",
+                    "settle_seconds": 0.01,
+                    "notification_quiet_seconds": 0.15,
+                }
+            ],
+            "state": {"database_path": str(tmp_path / "state" / "notifier.db")},
+        }
+    )
+    publisher = FakePublisher()
+    service = NotifierService(config, publisher=publisher)
+    service.start()
+    try:
+        document = vault / "회의록.md"
+        document.write_text("초안", encoding="utf-8")
+        time.sleep(0.1)
+        document.write_text("# 완료", encoding="utf-8")
+        time.sleep(0.1)
+        assert publisher.posts == []
+
+        wait_until(lambda: len(publisher.posts) == 1)
+    finally:
+        service.stop()
+
+
+def test_rename_after_notification_does_not_post_again(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = parse_config(
+        {
+            "mattermost": {
+                "url": "https://mattermost.example.com",
+                "token": "test-token",
+            },
+            "obsidian_notifications": [
+                {
+                    "vault_path": str(vault),
+                    "vault_name": "vault",
+                    "channel_id": "channel-1",
+                    "settle_seconds": 0.01,
+                    "notification_quiet_seconds": 0.03,
+                }
+            ],
+            "state": {"database_path": str(tmp_path / "state" / "notifier.db")},
+        }
+    )
+    publisher = FakePublisher()
+    service = NotifierService(config, publisher=publisher)
+    service.start()
+    try:
+        original = vault / "첫이름.md"
+        original.write_text("# 문서", encoding="utf-8")
+        wait_until(lambda: len(publisher.posts) == 1)
+
+        original.rename(vault / "바뀐이름.md")
+        time.sleep(0.1)
+
+        assert len(publisher.posts) == 1
+    finally:
+        service.stop()
+
+
+def test_restart_does_not_post_untitled_file_found_while_stopped(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = parse_config(
+        {
+            "mattermost": {
+                "url": "https://mattermost.example.com",
+                "token": "test-token",
+            },
+            "obsidian_notifications": [
+                {
+                    "vault_path": str(vault),
+                    "vault_name": "vault",
+                    "channel_id": "channel-1",
+                    "settle_seconds": 0.01,
+                    "notification_quiet_seconds": 0.03,
+                }
+            ],
+            "state": {"database_path": str(tmp_path / "state" / "notifier.db")},
+        }
+    )
+    baseline = NotifierService(config, publisher=FakePublisher())
+    baseline.start()
+    baseline.stop()
+
+    draft = vault / "무제.md"
+    draft.write_text("# 작성 중", encoding="utf-8")
+    publisher = FakePublisher()
+    restarted = NotifierService(config, publisher=publisher)
+    restarted.start()
+    try:
+        time.sleep(0.1)
+        assert publisher.posts == []
+
+        draft.rename(vault / "재시작후완료.md")
+        wait_until(lambda: len(publisher.posts) == 1)
+        assert "재시작후완료.md" in publisher.posts[0][1]
+    finally:
+        restarted.stop()
 
 
 def test_first_start_baselines_and_restart_posts_file_created_while_down(

@@ -25,6 +25,7 @@ def vault(path: Path, name: str) -> VaultConfig:
         channel_id=f"channel-{name}",
         ignore_folders=(),
         settle_seconds=0,
+        notification_quiet_seconds=0,
     )
 
 
