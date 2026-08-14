@@ -543,15 +543,27 @@ checkout에서 생성하는 것을 권장한다.
 cd /path/to/offline-bundle-<version>-<git-sha>
 sha256sum -c SHA256SUMS
 docker image load -i images.tar
-cat image-versions.env
 
-# 위 파일의 NOTIFIER_IMAGE와 LIVESYNC_BRIDGE_IMAGE를 운영 .env에 반영한 뒤 실행
+# image-versions.env는 Compose가 자동으로 읽지 않으므로 운영 .env를 실제로 교체한다.
+cp /data/obsidian-mattermost-notifier/.env \
+  /data/obsidian-mattermost-notifier/.env.before-image-update
+cp image-versions.env /data/obsidian-mattermost-notifier/.env
+
+# Compose가 새 태그를 읽는지 확인한 뒤 컨테이너를 재생성한다.
 cd /data/obsidian-mattermost-notifier
 docker compose config --quiet
+docker compose config --images
 docker compose up -d --pull never --no-build
 docker compose ps
+docker compose images
 docker compose logs --tail=100 obsidian-mattermost-notifier
 ```
+
+표준 설치 절차의 운영 `.env`에는 `NOTIFIER_IMAGE`와 `LIVESYNC_BRIDGE_IMAGE` 두 항목만 있으므로
+위와 같이 교체할 수 있다. 운영 `.env`에 별도 환경 변수를 추가했다면 파일 전체를 덮어쓰지
+말고 `image-versions.env`의 두 이미지 값만 기존 `.env`에 병합한다. `docker compose config
+--images` 출력이 새 `image-versions.env`의 두 태그와 같지 않으면 `docker compose up`을 실행하지
+말고 현재 디렉터리와 `.env` 경로부터 확인한다.
 
 새 설정 항목에 코드 기본값이 있고 기존 설정과 호환된다면 운영 `config.yaml`을 반드시 수정할
 필요는 없다. 이미지 갱신만으로 적용되는 변경에서는 다음 영속 데이터도 삭제하거나 초기화하지
