@@ -522,6 +522,49 @@ docker compose exec obsidian-mattermost-notifier \
 docker compose up -d --pull never --no-build
 ```
 
+#### 소스 코드만 변경된 경우
+
+notifier Python 소스나 문서만 변경되고 Compose 구조, 운영 설정 형식 및 영속 데이터 형식이
+바뀌지 않은 경우에도 새 commit으로 notifier 이미지를 다시 빌드해야 한다. `images.tar`를
+운영 서버에 복사하거나 `docker image load`만 실행하면 기존 `.env`가 이전 이미지 태그를 계속
+가리키므로 변경사항이 적용되지 않는다.
+
+깨끗한 Git checkout에서 새 오프라인 번들을 생성한다. 빌드 스크립트는 추적 파일의 변경뿐
+아니라 untracked 파일도 미커밋 변경으로 판단하므로, `git status --short`에 출력이 없어야 한다.
+로컬 작업 지침처럼 이미지에 포함하지 않을 untracked 파일이 있다면 운영 번들은 별도의 깨끗한
+checkout에서 생성하는 것을 권장한다.
+
+표준 빌드 스크립트는 notifier와 LiveSync Bridge를 모두 새 태그로 만들고 하나의
+`images.tar`에 저장한다. Bridge upstream source가 같더라도 태그에는 이 프로젝트 revision이
+포함되므로, 운영 `.env`에는 새 번들의 `image-versions.env`에 기록된 두 태그를 모두 반영한다.
+
+```bash
+# 새 번들을 반입한 운영 서버에서 실행
+cd /path/to/offline-bundle-<version>-<git-sha>
+sha256sum -c SHA256SUMS
+docker image load -i images.tar
+cat image-versions.env
+
+# 위 파일의 NOTIFIER_IMAGE와 LIVESYNC_BRIDGE_IMAGE를 운영 .env에 반영한 뒤 실행
+cd /data/obsidian-mattermost-notifier
+docker compose config --quiet
+docker compose up -d --pull never --no-build
+docker compose ps
+docker compose logs --tail=100 obsidian-mattermost-notifier
+```
+
+새 설정 항목에 코드 기본값이 있고 기존 설정과 호환된다면 운영 `config.yaml`을 반드시 수정할
+필요는 없다. 이미지 갱신만으로 적용되는 변경에서는 다음 영속 데이터도 삭제하거나 초기화하지
+않는다.
+
+- notifier SQLite DB
+- `bridge-initial-sync.complete` 승인 marker
+- vault mirror 파일
+- LiveSync Bridge 상태 디렉터리
+
+Compose 파일이나 설정 파일 자체가 변경된 release라면 새 예시와 기존 운영 파일을 비교하여
+필요한 항목만 별도로 병합한다. 운영 token이나 CouchDB 인증 정보를 예시 파일로 덮어쓰지 않는다.
+
 문제가 있으면 `.env`를 보존한 이전 이미지 태그로 되돌리고 같은 명령을 실행한다. rollback을
 위해 최소 한 세대의 이전 `images.tar`, `.env`, `BUILD-METADATA.txt`를 유지한다. vault,
 notifier SQLite DB 및 Bridge 상태 디렉터리는 이미지와 독립적으로 백업한다.
