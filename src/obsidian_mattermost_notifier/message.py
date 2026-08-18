@@ -47,15 +47,21 @@ def build_message(
     title: str,
     observed_at: datetime,
 ) -> str:
+    resolved_title = title.strip() if title else ""
+    if not resolved_title:
+        last_segment = relative_path.replace("\\", "/").rstrip("/").split("/")[-1]
+        resolved_title = last_segment.removesuffix(".md")
+
     local_time = observed_at.astimezone()
     timestamp = local_time.strftime("%Y-%m-%d %H:%M:%S %Z").rstrip()
     uri = obsidian_uri(vault_name, relative_path)
     return "\n".join(
         (
-            "📄 새 Obsidian 문서가 생성되었습니다.",
+            # "📄 새 Obsidian 문서가 생성되었습니다.",
+            # "",
+            # f"보관함: {_escape_markdown(vault_name)}",
+            f"## {_escape_markdown(resolved_title)}",
             "",
-            f"보관함: {_escape_markdown(vault_name)}",
-            f"제목: {_escape_markdown(title)}",
             f"경로: {_escape_markdown(relative_path)}",
             f"감지: {timestamp}",
             "",

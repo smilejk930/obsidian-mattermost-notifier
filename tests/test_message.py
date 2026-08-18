@@ -46,8 +46,19 @@ def test_message_contains_metadata_but_not_document_body() -> None:
         title="Mattermost 연동 설계",
         observed_at=datetime(2026, 8, 4, 9, 30, tzinfo=ZoneInfo("Asia/Seoul")),
     )
-    assert "새 Obsidian 문서" in message
-    assert "보관함: example_vault" in message
-    assert "Mattermost 연동 설계" in message
+    assert "## 제목: Mattermost 연동 설계" in message
+    assert "경로: 개발문서/설계.md" in message
     assert "감지:" in message
+    assert "obsidian://open" in message
+
+
+def test_build_message_fallback_title_from_relative_path() -> None:
+    message = build_message(
+        vault_name="example_vault",
+        relative_path="그린리모델링 기능고도화/1. BE/특일 정보(공휴일) OpenAPI 연동 API 명세서.md",
+        title="",
+        observed_at=datetime(2026, 8, 4, 9, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert "## 제목: 특일 정보(공휴일) OpenAPI 연동 API 명세서" in message
+    assert "경로: 그린리모델링 기능고도화/1. BE/특일 정보(공휴일) OpenAPI 연동 API 명세서.md" in message
     assert "obsidian://open" in message
